@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Platfarm Console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace;
+         background: #0d1117; color: #c9d1d9; }
+  header { padding: 14px 24px; border-bottom: 1px solid #21262d; display: flex;
+           justify-content: space-between; align-items: center; }
+  h1 { font-size: 16px; margin: 0; color: #58a6ff; }
+  main { max-width: 960px; margin: 24px auto; padding: 0 24px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: normal; }
+  .state-running { color: #3fb950; } .state-exited, .state-absent { color: #f85149; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px;
+           padding: 4px 12px; cursor: pointer; font: inherit; }
+  button:hover { border-color: #58a6ff; }
+  input { background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+          color: #c9d1d9; padding: 8px 10px; font: inherit; width: 220px; }
+  #login { display: flex; gap: 10px; margin: 80px auto; width: fit-content; flex-direction: column; }
+  pre { background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 12px;
+        max-height: 320px; overflow: auto; white-space: pre-wrap; }
+  .muted { color: #8b949e; font-size: 12px; }
+  #msg { color: #f85149; min-height: 20px; }
+  section h2 { font-size: 14px; color: #8b949e; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚙ Platfarm Console</h1>
+  <div><span id="who" class="muted"></span> <button id="logout" hidden onclick="logout()">退出</button></div>
+</header>
+
+<div id="login">
+  <input id="u" placeholder="用户名" value="admin">
+  <input id="p" placeholder="密码" type="password">
+  <button onclick="login()">登录（需 admin 角色）</button>
+  <div id="msg"></div>
+</div>
+
+<main id="app" hidden>
+  <section>
+    <h2>服务 <button onclick="load()">刷新</button></h2>
+    <table><thead><tr>
+      <th>ID</th><th>挂载</th><th>信任</th><th>语言</th><th>状态</th><th>操作</th>
+    </tr></thead><tbody id="rows"></tbody></table>
+  </section>
+  <section><h2>日志 <span id="logtitle" class="muted"></span></h2><pre id="logs">（点击服务行的"日志"查看）</pre></section>
+  <section><h2>审计</h2><pre id="audit">-</pre></section>
+  <p class="muted">console 是 pctl 的只读投影 + 启停外壳：安装/卸载等创建类操作请在宿主机使用 pctl CLI。</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const token = () => localStorage.getItem('pf_token');
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, { ...opts,
+    headers: { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json', ...opts.headers } });
+  if (r.status === 401) { logout(); throw new Error('未登录'); }
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || r.status);
+  return body;
+};
+
+async function login() {
+  $('msg').textContent = '';
+  try {
+    const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Username: $('u').value, Password: $('p').value }) });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || '登录失败');
+    localStorage.setItem('pf_token', body.accessToken);
+    enter($('u').value);
+  } catch (e) { $('msg').textContent = e.message; }
+}
+
+function enter(name) {
+  $('login').hidden = true; $('app').hidden = false; $('logout').hidden = false;
+  $('who').textContent = name || '已登录';
+  load();
+}
+
+function logout() {
+  localStorage.removeItem('pf_token');
+  location.reload();
+}
+
+async function load() {
+  try {
+    const rows = await api('/api/services');
+    $('rows').innerHTML = rows.map(s => `<tr>
+      <td>${s.ID}</td><td>${s.Mount}</td><td>${s.Trust}</td><td>${s.Lang}</td>
+      <td class="state-${s.State}">${s.Enabled ? s.State : 'disabled'} <span class="muted">${s.Status}</span></td>
+      <td>
+        <button onclick="toggle('${s.ID}', ${!s.Enabled})">${s.Enabled ? '停用' : '启用'}</button>
+        <button onclick="logs('${s.ID}')">日志</button>
+      </td></tr>`).join('');
+    const audit = await api('/api/audit');
+    $('audit').textContent = (audit || []).filter(Boolean).join('\n') || '（暂无操作记录）';
+  } catch (e) { if (e.message !== '未登录') alert(e.message); }
+}
+
+async function toggle(id, enable) {
+  if (!confirm(`确认${enable ? '启用' : '停用'} ${id}？（将重新生成网关配置并重启网关）`)) return;
+  try { await api(`/api/services/${id}/toggle`, { method: 'POST', body: JSON.stringify({ Enable: enable }) }); }
+  catch (e) { alert(e.message); }
+  load();
+}
+
+async function logs(id) {
+  $('logtitle').textContent = id;
+  try { $('logs').textContent = (await api(`/api/services/${id}/logs`)).logs || '（空）'; }
+  catch (e) { $('logs').textContent = e.message; }
+}
+
+if (token()) enter();
+</script>
+</body>
+</html>

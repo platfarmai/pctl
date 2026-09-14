@@ -1,0 +1,8 @@
+/pctl
+/pctl.exe
+/pctl_*
+/dist/
+*.exe
+.idea/
+.vscode/
+.DS_Store
