@@ -119,7 +119,12 @@ func redisRateLimit() bool {
 
 func rateLimitYAML(minute int, indent string) string {
 	if redisRateLimit() {
-		return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: redis, redis: { host: redis, port: 6379, timeout: 2000 }, limit_by: ip }\n", indent, indent, minute)
+		conn, err := parseRedisURL(os.Getenv("PF_REDIS_URL"))
+		if err != nil {
+			conn = redisConn{Host: "redis", Port: 6379}
+		}
+		return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: redis, %s, limit_by: ip }\n",
+			indent, indent, minute, kongRedisInline(conn))
 	}
 	return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: local, limit_by: ip }\n", indent, indent, minute)
 }

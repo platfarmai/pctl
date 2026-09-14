@@ -47,7 +47,11 @@ func bootstrapKongYAML(pubPEM string) string {
 	b.WriteString("  - name: auth\n    url: http://auth:8080\n    retries: 2\n    routes:\n")
 	b.WriteString("      - name: auth-route\n        paths: [\"/auth\"]\n        strip_path: false\n")
 	b.WriteString("        plugins:\n          - name: rate-limiting\n")
-	b.WriteString("            config: { minute: 60, policy: redis, redis: { host: redis, port: 6379, timeout: 2000 }, limit_by: ip }\n")
+	conn, err := parseRedisURL(os.Getenv("PF_REDIS_URL"))
+	if err != nil {
+		conn = redisConn{Host: "redis", Port: 6379}
+	}
+	b.WriteString("            config: { minute: 60, policy: redis, " + kongRedisInline(conn) + ", limit_by: ip }\n")
 	b.WriteString("      - name: platform-root\n        paths: [\"/\"]\n        strip_path: false\n\n")
 	b.WriteString("consumers:\n  - username: pf-auth-issuer\n    jwt_secrets:\n")
 	b.WriteString("      - key: pf-auth\n        algorithm: RS256\n        rsa_public_key: |\n")
