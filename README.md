@@ -4,7 +4,7 @@
 
 Command-line tool for [PlatFarm](https://github.com/platfarmai/platfarm): manifests, Kong/compose generation, plugin install, keys bootstrap, and the admin console binary.
 
-This repository is **CLI-only**. Platform images (`auth`, `console`, `runtime-*`) stay in [platfarmai/platfarm](https://github.com/platfarmai/platfarm) and publish to GHCR on `v*` tags.
+This repository is **CLI-only**. Platform images (`auth`, `console`) stay in [platfarmai/platfarm](https://github.com/platfarmai/platfarm) and publish to GHCR on `v*` tags.
 
 ## Install
 

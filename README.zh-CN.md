@@ -4,7 +4,7 @@
 
 [PlatFarm](https://github.com/platfarmai/platfarm) 的命令行工具：清单、Kong/compose 生成、插件安装、密钥初始化、管理台二进制。
 
-本仓库**只发 CLI**。平台镜像（`auth` / `console` / `runtime-*`）仍在 [platfarmai/platfarm](https://github.com/platfarmai/platfarm)，打 `v*` 推 GHCR。
+本仓库**只发 CLI**。平台镜像（`auth` / `console`）仍在 [platfarmai/platfarm](https://github.com/platfarmai/platfarm)，打 `v*` 推 GHCR。
 
 ## 安装
 
