@@ -10,8 +10,9 @@ import (
 // 纪律：清单只声明"存在什么"，判定规则永远在服务代码内。
 
 var (
-	declNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	callRE     = regexp.MustCompile(`^(svc-[a-z0-9-]+):([a-z][a-z0-9_-]{0,31})$`)
+	declNameRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+	callRE        = regexp.MustCompile(`^(svc-[a-z0-9-]+):([a-z][a-z0-9_-]{0,31})$`)
+	tablePrefixRE = regexp.MustCompile(`^[a-z][a-z0-9_]*_$`)
 )
 
 // validatePermissionDecls 校验版本号、roles/exposes 声明，以及 calls↔exposes 跨清单引用。
@@ -36,6 +37,10 @@ func validatePermissionDecls(manifests []Manifest) []string {
 		problems = append(problems, validateNamedDecls(m.ID, "exposes.scopes", m.Exposes.Scopes)...)
 		problems = append(problems, validateBootstrap(m)...)
 		problems = append(problems, validateAdminUI(m)...)
+		if p := m.Data.TablePrefix; p != "" && !tablePrefixRE.MatchString(p) {
+			problems = append(problems,
+				fmt.Sprintf("%s: data.table_prefix %q 非法（须小写、以 _ 结尾，如 cms_）", m.ID, p))
+		}
 
 		for _, call := range m.Permissions.Calls {
 			match := callRE.FindStringSubmatch(call)

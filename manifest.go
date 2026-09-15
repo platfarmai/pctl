@@ -53,7 +53,8 @@ type Manifest struct {
 		Env          []string `yaml:"env"`
 	} `yaml:"runtime"`
 	Data struct {
-		Database string `yaml:"database"`
+		Database    string `yaml:"database"`
+		TablePrefix string `yaml:"table_prefix"` // 可选表前缀（specs/007）；空=不加，否则须 ^[a-z][a-z0-9_]*_$
 	} `yaml:"data"`
 	Roles struct { // ② 我定义什么角色给用户（specs/003；语义永远在服务代码）
 		Vocabulary []NamedDecl `yaml:"vocabulary"`

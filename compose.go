@@ -102,7 +102,7 @@ func renderService(b *strings.Builder, m Manifest) {
 	} else {
 		fmt.Fprintf(b, "    build: ./services/%s\n", m.ID)
 	}
-	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 {
+	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 || m.Data.TablePrefix != "" {
 		b.WriteString("    environment:\n")
 		for _, v := range m.Runtime.Env {
 			if v == "PF_REDIS_URL" {
@@ -113,6 +113,9 @@ func renderService(b *strings.Builder, m Manifest) {
 		}
 		if len(m.Auth.AcceptServiceTokens) > 0 {
 			fmt.Fprintf(b, "      PF_ACCEPT_SERVICE_TOKENS: %s\n", strings.Join(m.Auth.AcceptServiceTokens, ","))
+		}
+		if m.Data.TablePrefix != "" { // specs/007：仅非空时注入
+			fmt.Fprintf(b, "      PF_TABLE_PREFIX: %s\n", m.Data.TablePrefix)
 		}
 	}
 	// 验签公钥挂载：第一方默认给；第三方按 needs_identity（公钥非密，可安全下发）
