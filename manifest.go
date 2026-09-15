@@ -62,6 +62,12 @@ type Manifest struct {
 	Exposes struct { // ③ 我暴露什么 scope 给其它服务（calls 的校验目标）
 		Scopes []NamedDecl `yaml:"scopes"`
 	} `yaml:"exposes"`
+	AdminUI struct { // 可嵌入的管理后台入口（specs/006）
+		Path  string `yaml:"path"`  // 相对 mount.path，如 /console
+		Embed bool   `yaml:"embed"` // 允许被平台壳 iframe 嵌入
+		Title string `yaml:"title"` // 壳里显示的名字
+		Icon  string `yaml:"icon"`  // 可选图标 key
+	} `yaml:"admin_ui"`
 	Test struct {
 		Command string `yaml:"command"`
 	} `yaml:"test"`
@@ -76,6 +82,14 @@ type NamedDecl struct {
 }
 
 func (m Manifest) IsThirdParty() bool { return m.Trust == "third-party" }
+
+// AdminURL 返回可嵌入后台的网关绝对路径（mount.path + admin_ui.path），无则空。
+func (m Manifest) AdminURL() string {
+	if m.AdminUI.Path == "" {
+		return ""
+	}
+	return strings.TrimRight(m.Mount.Path, "/") + "/" + strings.TrimLeft(m.AdminUI.Path, "/")
+}
 
 // IsEnabled 以 .disabled 标记文件为准（pctl enable/disable 管理）。
 func (m Manifest) IsEnabled() bool {

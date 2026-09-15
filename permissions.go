@@ -35,6 +35,7 @@ func validatePermissionDecls(manifests []Manifest) []string {
 		problems = append(problems, validateNamedDecls(m.ID, "roles.vocabulary", m.Roles.Vocabulary)...)
 		problems = append(problems, validateNamedDecls(m.ID, "exposes.scopes", m.Exposes.Scopes)...)
 		problems = append(problems, validateBootstrap(m)...)
+		problems = append(problems, validateAdminUI(m)...)
 
 		for _, call := range m.Permissions.Calls {
 			match := callRE.FindStringSubmatch(call)
@@ -88,4 +89,18 @@ func validateBootstrap(m Manifest) []string {
 		}
 	}
 	return []string{fmt.Sprintf("%s: roles.bootstrap 引用的角色 %q 未在 vocabulary 声明", m.ID, role)}
+}
+
+// validateAdminUI 校验 admin_ui（specs/006）：声明了 path 才检查，路径必须相对且非空。
+func validateAdminUI(m Manifest) []string {
+	if m.AdminUI.Path == "" {
+		return nil
+	}
+	if !strings.HasPrefix(m.AdminUI.Path, "/") {
+		return []string{fmt.Sprintf("%s: admin_ui.path %q 必须以 / 开头（相对 mount.path）", m.ID, m.AdminUI.Path)}
+	}
+	if strings.Contains(m.AdminUI.Path, "..") {
+		return []string{fmt.Sprintf("%s: admin_ui.path %q 不得包含 ..", m.ID, m.AdminUI.Path)}
+	}
+	return nil
 }

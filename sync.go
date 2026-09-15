@@ -138,6 +138,9 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	b.WriteString("      - name: auth-route\n        paths: [\"/auth\"]\n        strip_path: false\n        plugins:\n")
 	b.WriteString(rateLimitYAML(60, "          "))
 	b.WriteString("      - name: platform-root\n        paths: [\"/\"]\n        strip_path: false\n")
+	// SSO 统一管理壳：console 经网关同源挂载（specs/006）
+	b.WriteString("  - name: console\n    url: http://console:8080\n    retries: 2\n    routes:\n")
+	b.WriteString("      - name: platform-console\n        paths: [\"/platform/console\"]\n        strip_path: true\n")
 	for _, m := range manifests {
 		fmt.Fprintf(&b, "\n  - name: %s\n    url: http://%s:%d\n    retries: 2\n    routes:\n", m.ID, m.ID, m.Runtime.Port)
 		for i, p := range publicPrefixes(m) {
@@ -154,7 +157,23 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 			b.WriteString(rateLimitYAML(m.Limits.RatePerMinute, "          "))
 		}
 	}
+	// SSO：全局 pre-function，无 Authorization 但有 pf_access Cookie 时补 Bearer（specs/006）
 	b.WriteString(`
+# 全局 pre-function：cookie pf_access → Authorization: Bearer（SSO，specs/006）
+plugins:
+  - name: pre-function
+    config:
+      access:
+        - |
+          local h = kong.request.get_header("authorization")
+          if not h then
+            local ck = kong.request.get_header("cookie")
+            if ck then
+              local t = string.match(ck, "pf_access=([^;%s]+)")
+              if t then kong.service.request.set_header("authorization", "Bearer " .. t) end
+            end
+          end
+
 # jwt 插件按 iss=pf-auth 匹配此 consumer，RS256 公钥验签（私钥仅 auth 持有）
 consumers:
   - username: pf-auth-issuer
