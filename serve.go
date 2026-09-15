@@ -38,6 +38,7 @@ func runServe(root string) error {
 	})
 	mux.HandleFunc("POST /login", s.handleLogin)
 	mux.HandleFunc("GET /api/services", s.admin(s.handleServices))
+	mux.HandleFunc("GET /api/apps", s.admin(s.handleApps))
 	mux.HandleFunc("POST /api/services/{id}/toggle", s.admin(s.handleToggle))
 	mux.HandleFunc("GET /api/services/{id}/logs", s.admin(s.handleLogs))
 	mux.HandleFunc("GET /api/audit", s.admin(s.handleAudit))
@@ -123,6 +124,10 @@ func (s *console) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	// 透传 auth 的 Set-Cookie（pf_access），让浏览器拿到 SSO 会话（specs/006）
+	for _, c := range resp.Header["Set-Cookie"] {
+		w.Header().Add("Set-Cookie", c)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -156,6 +161,31 @@ func (s *console) handleServices(w http.ResponseWriter, _ *http.Request, _ strin
 		}
 		out = append(out, row{m.ID, m.Mount.Path, trust, m.Lang, state, status,
 			m.IsEnabled(), m.Limits.RatePerMinute})
+	}
+	writeJSONResp(w, out)
+}
+
+// handleApps 列出声明了可嵌入 admin_ui 的应用，供壳做 iframe 切换（specs/006）。
+func (s *console) handleApps(w http.ResponseWriter, _ *http.Request, _ string) {
+	manifests, err := loadManifests(s.root)
+	if err != nil {
+		jsonErr(w, 500, err.Error())
+		return
+	}
+	type app struct {
+		ID, Title, URL, Icon string
+		Embed                bool
+	}
+	out := []app{}
+	for _, m := range manifests {
+		if !m.IsEnabled() || m.AdminUI.Path == "" {
+			continue
+		}
+		title := m.AdminUI.Title
+		if title == "" {
+			title = m.ID
+		}
+		out = append(out, app{m.ID, title, m.AdminURL(), m.AdminUI.Icon, m.AdminUI.Embed})
 	}
 	writeJSONResp(w, out)
 }

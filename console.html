@@ -8,11 +8,16 @@
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace;
-         background: #0d1117; color: #c9d1d9; }
-  header { padding: 14px 24px; border-bottom: 1px solid #21262d; display: flex;
+         background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 12px 20px; border-bottom: 1px solid #21262d; display: flex;
            justify-content: space-between; align-items: center; }
-  h1 { font-size: 16px; margin: 0; color: #58a6ff; }
-  main { max-width: 960px; margin: 24px auto; padding: 0 24px; }
+  h1 { font-size: 15px; margin: 0; color: #58a6ff; }
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  nav button { background: #161b22; }
+  nav button.active { border-color: #58a6ff; color: #58a6ff; }
+  #wrap { flex: 1; display: flex; min-height: 0; }
+  #panel { flex: 1; overflow: auto; padding: 20px; }
+  iframe { flex: 1; border: 0; background: #fff; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #21262d; }
   th { color: #8b949e; font-weight: normal; }
@@ -32,7 +37,8 @@
 </head>
 <body>
 <header>
-  <h1>⚙ Platfarm Console</h1>
+  <h1>⚙ Platfarm</h1>
+  <nav id="nav" hidden></nav>
   <div><span id="who" class="muted"></span> <button id="logout" hidden onclick="logout()">退出</button></div>
 </header>
 
@@ -43,25 +49,28 @@
   <div id="msg"></div>
 </div>
 
-<main id="app" hidden>
-  <section>
-    <h2>服务 <button onclick="load()">刷新</button></h2>
-    <table><thead><tr>
-      <th>ID</th><th>挂载</th><th>信任</th><th>语言</th><th>状态</th><th>操作</th>
-    </tr></thead><tbody id="rows"></tbody></table>
-  </section>
-  <section><h2>日志 <span id="logtitle" class="muted"></span></h2><pre id="logs">（点击服务行的"日志"查看）</pre></section>
-  <section><h2>审计</h2><pre id="audit">-</pre></section>
-  <p class="muted">console 是 pctl 的只读投影 + 启停外壳：安装/卸载等创建类操作请在宿主机使用 pctl CLI。</p>
-</main>
+<div id="wrap" hidden>
+  <div id="panel">
+    <section>
+      <h2>服务 <button onclick="loadServices()">刷新</button></h2>
+      <table><thead><tr>
+        <th>ID</th><th>挂载</th><th>信任</th><th>语言</th><th>状态</th><th>操作</th>
+      </tr></thead><tbody id="rows"></tbody></table>
+    </section>
+    <section><h2>日志 <span id="logtitle" class="muted"></span></h2><pre id="logs">（点击服务行的"日志"查看）</pre></section>
+    <section><h2>审计</h2><pre id="audit">-</pre></section>
+    <p class="muted">SSO：登录后打开各应用后台无需再次登录。创建/卸载类操作仍走宿主机 pctl CLI。</p>
+  </div>
+  <iframe id="frame" hidden></iframe>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
-const token = () => localStorage.getItem('pf_token');
+// Cookie 会话（specs/006）：无需在 JS 持有 token；同源请求自动带 pf_access，Kong 补 Bearer。
 const api = async (path, opts = {}) => {
-  const r = await fetch(path, { ...opts,
-    headers: { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json', ...opts.headers } });
-  if (r.status === 401) { logout(); throw new Error('未登录'); }
+  const r = await fetch(path, { credentials: 'same-origin', ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  if (r.status === 401) { showLogin(); throw new Error('未登录'); }
   const body = await r.json();
   if (!r.ok) throw new Error(body.error || r.status);
   return body;
@@ -70,29 +79,56 @@ const api = async (path, opts = {}) => {
 async function login() {
   $('msg').textContent = '';
   try {
-    const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    const r = await fetch('login', { method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: $('u').value, Password: $('p').value }) });
     const body = await r.json();
     if (!r.ok) throw new Error(body.error || '登录失败');
-    localStorage.setItem('pf_token', body.accessToken);
-    enter($('u').value);
+    // 登录响应已通过 Set-Cookie 写入 pf_access；无需存 localStorage
+    enter();
   } catch (e) { $('msg').textContent = e.message; }
 }
 
-function enter(name) {
-  $('login').hidden = true; $('app').hidden = false; $('logout').hidden = false;
-  $('who').textContent = name || '已登录';
-  load();
+function showLogin() {
+  $('login').hidden = false; $('wrap').hidden = true; $('nav').hidden = true; $('logout').hidden = true;
 }
+
+async function enter() {
+  $('login').hidden = true; $('wrap').hidden = false; $('logout').hidden = false;
+  try {
+    const me = await fetch('../../auth/me', { credentials: 'same-origin' }).then(r => r.ok ? r.json() : null);
+    $('who').textContent = me ? (me.username + ' (' + me.role + ')') : '已登录';
+  } catch { $('who').textContent = '已登录'; }
+  await buildNav();
+  loadServices();
+}
+
+async function buildNav() {
+  let apps = [];
+  try { apps = await api('api/apps'); } catch {}
+  const nav = $('nav'); nav.hidden = false;
+  const tabs = [`<button class="active" onclick="showConsole(this)">控制台</button>`];
+  for (const a of apps) {
+    if (!a.Embed) {
+      tabs.push(`<button onclick="window.open('${a.URL}','_blank')">${a.Title} ↗</button>`);
+    } else {
+      tabs.push(`<button onclick="showApp(this,'${a.URL}')">${a.Title}</button>`);
+    }
+  }
+  nav.innerHTML = tabs.join('');
+}
+
+function setActive(btn) { for (const b of $('nav').children) b.classList.remove('active'); btn.classList.add('active'); }
+function showConsole(btn) { setActive(btn); $('panel').hidden = false; $('frame').hidden = true; $('frame').src = 'about:blank'; }
+function showApp(btn, url) { setActive(btn); $('panel').hidden = true; $('frame').hidden = false; $('frame').src = url; }
 
 function logout() {
-  localStorage.removeItem('pf_token');
-  location.reload();
+  fetch('../../auth/logout', { method: 'POST', credentials: 'same-origin' }).finally(() => location.reload());
 }
 
-async function load() {
+async function loadServices() {
   try {
-    const rows = await api('/api/services');
+    const rows = await api('api/services');
     $('rows').innerHTML = rows.map(s => `<tr>
       <td>${s.ID}</td><td>${s.Mount}</td><td>${s.Trust}</td><td>${s.Lang}</td>
       <td class="state-${s.State}">${s.Enabled ? s.State : 'disabled'} <span class="muted">${s.Status}</span></td>
@@ -100,25 +136,26 @@ async function load() {
         <button onclick="toggle('${s.ID}', ${!s.Enabled})">${s.Enabled ? '停用' : '启用'}</button>
         <button onclick="logs('${s.ID}')">日志</button>
       </td></tr>`).join('');
-    const audit = await api('/api/audit');
+    const audit = await api('api/audit');
     $('audit').textContent = (audit || []).filter(Boolean).join('\n') || '（暂无操作记录）';
   } catch (e) { if (e.message !== '未登录') alert(e.message); }
 }
 
 async function toggle(id, enable) {
   if (!confirm(`确认${enable ? '启用' : '停用'} ${id}？（将重新生成网关配置并重启网关）`)) return;
-  try { await api(`/api/services/${id}/toggle`, { method: 'POST', body: JSON.stringify({ Enable: enable }) }); }
+  try { await api(`api/services/${id}/toggle`, { method: 'POST', body: JSON.stringify({ Enable: enable }) }); }
   catch (e) { alert(e.message); }
-  load();
+  loadServices();
 }
 
 async function logs(id) {
   $('logtitle').textContent = id;
-  try { $('logs').textContent = (await api(`/api/services/${id}/logs`)).logs || '（空）'; }
+  try { $('logs').textContent = (await api(`api/services/${id}/logs`)).logs || '（空）'; }
   catch (e) { $('logs').textContent = e.message; }
 }
 
-if (token()) enter();
+// 启动：cookie 会话存在则直接进入；否则显示登录
+fetch('../../auth/me', { credentials: 'same-origin' }).then(r => { if (r.ok) enter(); else showLogin(); }).catch(showLogin);
 </script>
 </body>
 </html>
