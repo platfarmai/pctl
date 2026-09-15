@@ -69,6 +69,8 @@ func run(args []string) error {
 		}
 		purge := len(args) > 2 && args[2] == "--purge"
 		return runUninstall(root, args[1], purge)
+	case "market":
+		return runMarket(root, args[1:])
 	case "serve":
 		return runServe(root)
 	case "upgrade":
@@ -92,6 +94,7 @@ func usageError() error {
   pctl check [--e2e]                清单校验（--e2e 附加运行容器内契约测试）
   pctl list                         平台服务总览
   pctl install <插件目录>            安装第三方插件（开库开号+发凭据+契约测试闸门）
+  pctl market <search|info|install> 插件市场（git 索引 + digest 锁定安装）
   pctl enable|disable <svc-id>      启停服务/插件（摘挂路由）
   pctl uninstall <svc-id> [--purge] 卸载（--purge 连数据一起删）
   pctl serve                      启动 Web 控制台（容器内运行，见 compose console 服务）
