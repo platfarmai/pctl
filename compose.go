@@ -50,6 +50,8 @@ func renderGateway(b *strings.Builder, pluginNets []string) {
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_LISTEN: "127.0.0.1:8001"
       KONG_NGINX_WORKER_PROCESSES: ${KONG_NGINX_WORKER_PROCESSES:-1} # Redis 限流时可改为 auto
+      KONG_UNTRUSTED_LUA: sandbox # pre-function 需 require("cjson")（SSO/开放平台 scope 校验，specs/006+009）
+      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: cjson
     ports:
       - "18000:8000"
     volumes:

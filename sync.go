@@ -129,6 +129,53 @@ func rateLimitYAML(minute int, indent string) string {
 	return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: local, limit_by: ip }\n", indent, indent, minute)
 }
 
+// openScopeGateYAML 生成开放路由的 scope 校验 pre-function（specs/009）：
+// 要求 tokenType=app 且路由 scope ∈ token.scopes，否则 403；并写 X-PF-App-Key 供限流/计量。
+func openScopeGateYAML(scope, indent string) string {
+	// Kong 沙箱禁止 require(jwt_parser)，故手动解 JWT payload（不验签——签名由 jwt 插件校验）。
+	lua := strings.ReplaceAll(`local auth = kong.request.get_header("authorization")
+if not auth then return kong.response.exit(401, { error = "app token required" }) end
+local token = string.gsub(auth, "^Bearer%s+", "")
+local seg = {}
+for s in string.gmatch(token, "[^.]+") do seg[#seg+1] = s end
+if #seg < 2 then return kong.response.exit(401, { error = "invalid token" }) end
+local b64 = seg[2]:gsub("-", "+"):gsub("_", "/")
+local pad = #b64 % 4
+if pad > 0 then b64 = b64 .. string.rep("=", 4 - pad) end
+local raw = ngx.decode_base64(b64)
+if not raw then return kong.response.exit(401, { error = "invalid token" }) end
+local ok_json, claims = pcall(function() return require("cjson").decode(raw) end)
+if not ok_json or not claims then return kong.response.exit(401, { error = "invalid token" }) end
+if claims.tokenType ~= "app" then return kong.response.exit(403, { error = "open API requires an app token" }) end
+local ok = false
+for _, s in ipairs(claims.scopes or {}) do if s == "__SCOPE__" then ok = true break end end
+if not ok then return kong.response.exit(403, { error = "missing scope __SCOPE__" }) end
+kong.service.request.set_header("X-PF-App-Key", claims.appKey or "")`, "__SCOPE__", scope)
+
+	var b strings.Builder
+	b.WriteString(indent + "- name: pre-function\n")
+	b.WriteString(indent + "  config:\n")
+	b.WriteString(indent + "    access:\n")
+	b.WriteString(indent + "      - |\n")
+	for _, line := range strings.Split(lua, "\n") {
+		b.WriteString(indent + "          " + line + "\n")
+	}
+	return b.String()
+}
+
+// rateLimitByAppYAML 按 app 限流（X-PF-App-Key）。redis 可用则集中计数。
+func rateLimitByAppYAML(minute int, indent string) string {
+	if redisRateLimit() {
+		conn, err := parseRedisURL(os.Getenv("PF_REDIS_URL"))
+		if err != nil {
+			conn = redisConn{Host: "redis", Port: 6379}
+		}
+		return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: redis, %s, limit_by: header, header_name: X-PF-App-Key }\n",
+			indent, indent, minute, kongRedisInline(conn))
+	}
+	return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: local, limit_by: header, header_name: X-PF-App-Key }\n", indent, indent, minute)
+}
+
 func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	var b strings.Builder
 	b.WriteString("_format_version: \"3.0\"\n\n")
@@ -145,6 +192,15 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 		fmt.Fprintf(&b, "\n  - name: %s\n    url: http://%s:%d\n    retries: 2\n    routes:\n", m.ID, m.ID, m.Runtime.Port)
 		for i, p := range publicPrefixes(m) {
 			fmt.Fprintf(&b, "      - name: %s-public-%d\n        paths: [\"%s\"]\n        strip_path: %v\n", m.ID, i, p, m.Mount.StripPath)
+		}
+		// 开放平台路由（specs/009）：更具体的路径 + 方法，优先于 -protected 命中
+		for i, o := range m.OpenAPI {
+			fmt.Fprintf(&b, "      - name: %s-open-%d\n        paths: [\"%s\"]\n        methods: [\"%s\"]\n        strip_path: %v\n",
+				m.ID, i, o.Path(), o.Method(), m.Mount.StripPath)
+			b.WriteString("        plugins:\n")
+			b.WriteString("          - name: jwt\n            config: { key_claim_name: iss, claims_to_verify: [\"exp\"] }\n")
+			b.WriteString(openScopeGateYAML(o.Scope, "          "))
+			b.WriteString(rateLimitByAppYAML(60, "          "))
 		}
 		fmt.Fprintf(&b, "      - name: %s-protected\n        paths: [\"%s\"]\n        strip_path: %v\n", m.ID, m.Mount.Path, m.Mount.StripPath)
 		if m.Auth.Required || m.Limits.RatePerMinute > 0 {
