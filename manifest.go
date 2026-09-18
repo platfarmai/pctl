@@ -19,7 +19,7 @@ type Manifest struct {
 	Version     string `yaml:"version"`
 	Lang        string `yaml:"lang"`
 	Trust       string `yaml:"trust"` // ""/first-party | third-party
-	Source  struct {
+	Source      struct {
 		Type   string `yaml:"type"` // build（默认）| image
 		Image  string `yaml:"image"`
 		Digest string `yaml:"digest"`
@@ -63,7 +63,8 @@ type Manifest struct {
 	Exposes struct { // ③ 我暴露什么 scope 给其它服务（calls 的校验目标）
 		Scopes []NamedDecl `yaml:"scopes"`
 	} `yaml:"exposes"`
-	AdminUI struct { // 可嵌入的管理后台入口（specs/006）
+	OpenAPI []OpenRoute `yaml:"open_api"` // 开放平台路由→scope 映射（specs/009）
+	AdminUI struct {    // 可嵌入的管理后台入口（specs/006）
 		Path  string `yaml:"path"`  // 相对 mount.path，如 /console
 		Embed bool   `yaml:"embed"` // 允许被平台壳 iframe 嵌入
 		Title string `yaml:"title"` // 壳里显示的名字
@@ -80,6 +81,27 @@ type Manifest struct {
 type NamedDecl struct {
 	Name string `yaml:"name"`
 	Desc string `yaml:"desc"`
+}
+
+// OpenRoute 开放平台路由声明（specs/009）：route 如 "GET /api/demo/data"，scope 须在 exposes.scopes。
+type OpenRoute struct {
+	Route string `yaml:"route"`
+	Scope string `yaml:"scope"`
+}
+
+// Method 返回 route 的 HTTP 方法（默认 GET）。
+func (o OpenRoute) Method() string {
+	f := strings.Fields(o.Route)
+	if len(f) == 2 {
+		return strings.ToUpper(f[0])
+	}
+	return "GET"
+}
+
+// Path 返回 route 的路径部分。
+func (o OpenRoute) Path() string {
+	f := strings.Fields(o.Route)
+	return f[len(f)-1]
 }
 
 func (m Manifest) IsThirdParty() bool { return m.Trust == "third-party" }

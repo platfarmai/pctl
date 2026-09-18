@@ -10,8 +10,9 @@ import (
 // 纪律：清单只声明"存在什么"，判定规则永远在服务代码内。
 
 var (
-	declNameRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
-	callRE        = regexp.MustCompile(`^(svc-[a-z0-9-]+):([a-z][a-z0-9_-]{0,31})$`)
+	declNameRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)      // 角色名（严格，不含点）
+	scopeNameRE   = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)     // scope 名（允许点号分层，如 data.orders.read）
+	callRE        = regexp.MustCompile(`^(svc-[a-z0-9-]+):([a-z][a-z0-9_.-]{0,63})$`)
 	tablePrefixRE = regexp.MustCompile(`^[a-z][a-z0-9_]*_$`)
 )
 
@@ -33,10 +34,11 @@ func validatePermissionDecls(manifests []Manifest) []string {
 			problems = append(problems,
 				fmt.Sprintf("%s: manifest 规范版本 %q 不支持（当前仅 v1）", m.ID, m.SpecVersion))
 		}
-		problems = append(problems, validateNamedDecls(m.ID, "roles.vocabulary", m.Roles.Vocabulary)...)
-		problems = append(problems, validateNamedDecls(m.ID, "exposes.scopes", m.Exposes.Scopes)...)
+		problems = append(problems, validateNamedDeclsRE(m.ID, "roles.vocabulary", m.Roles.Vocabulary, declNameRE)...)
+		problems = append(problems, validateNamedDeclsRE(m.ID, "exposes.scopes", m.Exposes.Scopes, scopeNameRE)...)
 		problems = append(problems, validateBootstrap(m)...)
 		problems = append(problems, validateAdminUI(m)...)
+		problems = append(problems, validateOpenAPI(m)...)
 		if p := m.Data.TablePrefix; p != "" && !tablePrefixRE.MatchString(p) {
 			problems = append(problems,
 				fmt.Sprintf("%s: data.table_prefix %q 非法（须小写、以 _ 结尾，如 cms_）", m.ID, p))
@@ -64,13 +66,13 @@ func validatePermissionDecls(manifests []Manifest) []string {
 	return problems
 }
 
-func validateNamedDecls(id, field string, decls []NamedDecl) []string {
+func validateNamedDeclsRE(id, field string, decls []NamedDecl, re *regexp.Regexp) []string {
 	var problems []string
 	seen := map[string]bool{}
 	for _, d := range decls {
-		if !declNameRE.MatchString(d.Name) {
+		if !re.MatchString(d.Name) {
 			problems = append(problems,
-				fmt.Sprintf("%s: %s 名称 %q 非法（^[a-z][a-z0-9_-]{0,31}$）", id, field, d.Name))
+				fmt.Sprintf("%s: %s 名称 %q 非法（须匹配 %s）", id, field, d.Name, re.String()))
 		}
 		if seen[d.Name] {
 			problems = append(problems, fmt.Sprintf("%s: %s 名称 %q 重复", id, field, d.Name))
@@ -108,4 +110,36 @@ func validateAdminUI(m Manifest) []string {
 		return []string{fmt.Sprintf("%s: admin_ui.path %q 不得包含 ..", m.ID, m.AdminUI.Path)}
 	}
 	return nil
+}
+
+// validateOpenAPI 校验 open_api（specs/009）：route 格式合法、path 在 mount.path 下、
+// scope 必须在本服务 exposes.scopes 声明。
+func validateOpenAPI(m Manifest) []string {
+	if len(m.OpenAPI) == 0 {
+		return nil
+	}
+	declared := map[string]bool{}
+	for _, s := range m.Exposes.Scopes {
+		declared[s.Name] = true
+	}
+	var problems []string
+	for _, o := range m.OpenAPI {
+		fields := strings.Fields(o.Route)
+		if len(fields) != 2 {
+			problems = append(problems,
+				fmt.Sprintf("%s: open_api.route %q 格式必须为 \"METHOD /path\"", m.ID, o.Route))
+			continue
+		}
+		if !strings.HasPrefix(o.Path(), m.Mount.Path) {
+			problems = append(problems,
+				fmt.Sprintf("%s: open_api.route %q 的路径须在 mount.path %q 下", m.ID, o.Route, m.Mount.Path))
+		}
+		if o.Scope == "" {
+			problems = append(problems, fmt.Sprintf("%s: open_api.route %q 缺 scope", m.ID, o.Route))
+		} else if !declared[o.Scope] {
+			problems = append(problems,
+				fmt.Sprintf("%s: open_api scope %q 未在 exposes.scopes 声明", m.ID, o.Scope))
+		}
+	}
+	return problems
 }
