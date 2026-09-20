@@ -229,6 +229,14 @@ plugins:
               if t then kong.service.request.set_header("authorization", "Bearer " .. t) end
             end
           end
+  # 计量（specs/013）：结构化 JSON 访问日志到 stdout，含 app key / request id / route / status
+  # 由 promtail 采集进 Loki。log serializer 自带 request.headers，promtail 侧提取 X-PF-App-Key。
+  - name: file-log
+    config:
+      path: /dev/stdout
+      custom_fields_by_lua:
+        pf_app_key: "return kong.request.get_header('x-pf-app-key') or ''"
+        pf_request_id: "return kong.request.get_header('x-request-id') or kong.ctx.shared.request_id or ''"
 
 # jwt 插件按 iss=pf-auth 匹配此 consumer，RS256 公钥验签（私钥仅 auth 持有）
 consumers:

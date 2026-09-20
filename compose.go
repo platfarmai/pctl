@@ -111,6 +111,10 @@ func renderService(b *strings.Builder, m Manifest) {
 				fmt.Fprintf(b, "      %s: ${PF_REDIS_URL:-redis://redis:6379/0}\n", v)
 				continue
 			}
+			if v == "LOKI_URL" { // specs/013：默认空 → 用量视图显示"未启用"
+				fmt.Fprintf(b, "      %s: ${LOKI_URL:-}\n", v)
+				continue
+			}
 			fmt.Fprintf(b, "      %s: ${%s}\n", v, v)
 		}
 		if len(m.Auth.AcceptServiceTokens) > 0 {
