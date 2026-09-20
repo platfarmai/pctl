@@ -24,6 +24,14 @@ type marketVersion struct {
 	Digest    string   `yaml:"digest"`
 	Manifest  Manifest `yaml:"manifest"`
 	Published string   `yaml:"published"`
+	Signature *sigRef  `yaml:"signature"` // cosign 验签引用（specs/012）
+}
+
+type sigRef struct {
+	Mode      string `yaml:"mode"`      // keyless | key
+	Identity  string `yaml:"identity"`  // keyless: 证书身份
+	Issuer    string `yaml:"issuer"`    // keyless: OIDC issuer
+	PublicKey string `yaml:"publicKey"` // key: PEM 或路径
 }
 
 type marketEntry struct {
@@ -214,6 +222,13 @@ func marketInstall(root, base, id, ver string, dryRun bool) error {
 	}
 	if len(m.Permissions.Egress) > 0 {
 		fmt.Printf("  申请出网（egress）: %s\n", strings.Join(m.Permissions.Egress, ", "))
+	}
+
+	// cosign 验签（specs/012）：dry-run 不验，真实安装前对 image@digest 验签
+	if !dryRun {
+		if err := verifySignature(v.Image+"@"+v.Digest, v.Signature); err != nil {
+			return err
+		}
 	}
 
 	// 落盘到临时插件目录，复用既有 install 闸门
