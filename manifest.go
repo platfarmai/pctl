@@ -47,9 +47,11 @@ type Manifest struct {
 		Cpus   string `yaml:"cpus"`
 	} `yaml:"resources"`
 	Runtime struct {
-		Port         int      `yaml:"port"`
-		Health       string   `yaml:"health"`
-		DrainSeconds int      `yaml:"drain_seconds"` // SIGTERM 排空上限，默认 25（specs/005）
+		Port   int    `yaml:"port"`
+		Health string `yaml:"health"`
+		// Healthcheck 探活方式：""/pid（默认，任何镜像可用）| http（需镜像自带 wget）| none
+		Healthcheck  string   `yaml:"healthcheck"`
+		DrainSeconds int      `yaml:"drain_seconds"` // SIGTERM 优雅上限，默认 25（specs/005）
 		Env          []string `yaml:"env"`
 	} `yaml:"runtime"`
 	Data struct {
@@ -129,14 +131,42 @@ func (m Manifest) NetworkName() string {
 
 var reservedPrefixes = []string{"/auth", "/platform", "/internal", "/docs"}
 
+// servicesDirs 返回要扫描清单的目录列表。
+// 镜像部署（compose.release.yml）的运行目录没有 services/，插件源码常放在别处（如 _src/services），
+// 此时 sync 会扫不到任何清单，生成出只含 auth 的 kong.yml。
+// 用 PF_SERVICES_DIR 指定实际位置（多个用 os.PathListSeparator 分隔），相对路径相对 root 解析。
+func servicesDirs(root string) []string {
+	raw := strings.TrimSpace(envFromRoot(root, "PF_SERVICES_DIR"))
+	if raw == "" {
+		return []string{filepath.Join(root, "services")}
+	}
+	var out []string
+	for _, dir := range strings.Split(raw, string(os.PathListSeparator)) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(root, dir)
+		}
+		out = append(out, dir)
+	}
+	if len(out) == 0 {
+		return []string{filepath.Join(root, "services")}
+	}
+	return out
+}
+
 func loadManifests(root string) ([]Manifest, error) {
 	var files []string
-	for _, name := range []string{"service.yaml", "plugin.yaml"} {
-		matched, err := filepath.Glob(filepath.Join(root, "services", "*", name))
-		if err != nil {
-			return nil, err
+	for _, dir := range servicesDirs(root) {
+		for _, name := range []string{"service.yaml", "plugin.yaml"} {
+			matched, err := filepath.Glob(filepath.Join(dir, "*", name))
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, matched...)
 		}
-		files = append(files, matched...)
 	}
 	sort.Strings(files)
 	manifests := make([]Manifest, 0, len(files))
@@ -203,6 +233,13 @@ func validateManifests(manifests []Manifest) error {
 		}
 		if m.Data.Database != "" && !strings.HasPrefix(m.Data.Database, "pf_") {
 			problems = append(problems, fmt.Sprintf("%s: data.database %q 必须以 pf_ 前缀命名", m.ID, m.Data.Database))
+		}
+		// specs/015：第一方声明自有库 ⇒ 必须携带迁移文件（启动时自应用，append-only）
+		if m.Data.Database != "" && !m.IsThirdParty() {
+			matched, _ := filepath.Glob(filepath.Join(m.Dir, "migrations", "*.sql"))
+			if len(matched) == 0 {
+				problems = append(problems, fmt.Sprintf("%s: 声明了 data.database 但缺少 migrations/*.sql（specs/015）", m.ID))
+			}
 		}
 		if m.IsThirdParty() {
 			if m.Source.Image == "" {
