@@ -72,9 +72,18 @@ func run(args []string) error {
 	case "market":
 		return runMarket(root, args[1:])
 	case "backup":
+		if len(args) > 1 && args[1] == "--schedule" {
+			return runBackupSchedule(root, args[2:])
+		}
 		return runBackup(root, args[1:])
 	case "restore":
 		return runRestore(root, args[1:])
+	case "rotate-keys":
+		return runRotateKeys(root)
+	case "release":
+		return runRelease(root, args[1:])
+	case "decrypt":
+		return runDecrypt(args[1:])
 	case "serve":
 		return runServe(root)
 	case "upgrade":
@@ -104,7 +113,11 @@ func usageError() error {
   pctl serve                      启动 Web 控制台（容器内运行，见 compose console 服务）
   pctl upgrade <svc-id> <新目录>     升级（卸载保数据 + 重装）
   pctl backup [--out dir]           备份平台库/插件库/密钥/插件凭据（specs/020）
-  pctl restore <目录> --force        从备份恢复（覆盖现有数据）`)
+  pctl backup --schedule [--at HH:MM] [--remote cmd]  注册每日定时备份
+  pctl restore <目录> --force        从备份恢复（覆盖现有数据）
+  pctl rotate-keys                  重叠轮换 RS256 签名密钥（旧公钥保留至 jwks-extra）
+  pctl release list|deploy|rollback  第一方服务发布记账（仅写 deploy/releases.json）
+  pctl decrypt --key <dataKey> [file]  解密网关 AES-GCM 响应（附录 F）`)
 }
 
 // findRoot 从当前目录向上找平台根（以 gateway/ 目录 + docker-compose.yml 为标志）。
