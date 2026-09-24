@@ -25,13 +25,21 @@ func renderServicesCompose(manifests []Manifest) string {
 	if hasThirdParty {
 		renderPluginPG(&b, pluginNets)
 	}
+	hasEgress := false
 	for _, m := range manifests {
 		renderService(&b, m)
+		if m.IsThirdParty() && len(m.Permissions.Egress) > 0 {
+			renderEgressProxy(&b, m)
+			hasEgress = true
+		}
 	}
-	if len(pluginNets) > 0 {
+	if len(pluginNets) > 0 || hasEgress {
 		b.WriteString("\nnetworks:\n")
 		for _, n := range pluginNets {
-			fmt.Fprintf(&b, "  %s:\n    internal: true # 断外网；需 egress 的插件走代理（附录 H.4）\n", n)
+			fmt.Fprintf(&b, "  %s:\n    internal: true # 断外网；需 egress 的插件走代理（附录 H.4 + specs/024）\n", n)
+		}
+		if hasEgress {
+			b.WriteString("  egress-net: {} # egress sidecar 的出网侧（specs/024）\n")
 		}
 	}
 	if hasThirdParty {
@@ -104,8 +112,17 @@ func renderService(b *strings.Builder, m Manifest) {
 	} else {
 		fmt.Fprintf(b, "    build: ./services/%s\n", m.ID)
 	}
-	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 || m.Data.TablePrefix != "" {
+	hasEgress := m.IsThirdParty() && len(m.Permissions.Egress) > 0
+	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 || m.Data.TablePrefix != "" || hasEgress {
 		b.WriteString("    environment:\n")
+		if hasEgress { // specs/024：出网只能走白名单代理
+			fmt.Fprintf(b, "      HTTP_PROXY: http://egress-%s:3128\n", m.ID)
+			fmt.Fprintf(b, "      HTTPS_PROXY: http://egress-%s:3128\n", m.ID)
+			fmt.Fprintf(b, "      http_proxy: http://egress-%s:3128\n", m.ID)
+			fmt.Fprintf(b, "      https_proxy: http://egress-%s:3128\n", m.ID)
+			b.WriteString("      NO_PROXY: gateway,plugin-pg,localhost,127.0.0.1\n")
+			b.WriteString("      no_proxy: gateway,plugin-pg,localhost,127.0.0.1\n")
+		}
 		for _, v := range m.Runtime.Env {
 			if v == "PF_REDIS_URL" {
 				fmt.Fprintf(b, "      %s: ${PF_REDIS_URL:-redis://redis:6379/0}\n", v)
@@ -115,7 +132,10 @@ func renderService(b *strings.Builder, m Manifest) {
 				fmt.Fprintf(b, "      %s: ${LOKI_URL:-}\n", v)
 				continue
 			}
-			fmt.Fprintf(b, "      %s: ${%s}\n", v, v)
+			// 服务专属变量优先，回落到同名全局变量。
+			// 否则每个服务的 DATABASE_URL 都指向 ${DATABASE_URL}，
+			// 改成插件库就会让 auth 连错库（auth 与插件本就该用不同数据库）。
+			fmt.Fprintf(b, "      %s: ${%s:-${%s}}\n", v, scopedEnvName(m.ID, v), v)
 		}
 		if len(m.Auth.AcceptServiceTokens) > 0 {
 			fmt.Fprintf(b, "      PF_ACCEPT_SERVICE_TOKENS: %s\n", strings.Join(m.Auth.AcceptServiceTokens, ","))
@@ -137,8 +157,42 @@ func renderService(b *strings.Builder, m Manifest) {
 		port = 8080
 	}
 	fmt.Fprintf(b, "    stop_grace_period: %ds\n", drain+5)
-	fmt.Fprintf(b, "    healthcheck:\n      test: [\"CMD\", \"wget\", \"-qO-\", \"http://127.0.0.1:%d/readyz\"]\n      interval: 5s\n      timeout: 3s\n      retries: 3\n      start_period: 15s\n", port)
+	renderHealthcheck(b, m, port)
 	b.WriteString("    networks:\n" + netList([]string{m.NetworkName()}))
+}
+
+// scopedEnvName 把 svc-ads + DATABASE_URL 变成 SVC_ADS_DATABASE_URL，
+// 让每个服务能独立配置同名变量，互不影响。
+func scopedEnvName(id, name string) string {
+	prefix := strings.ToUpper(strings.NewReplacer("-", "_", ".", "_").Replace(id))
+	return prefix + "_" + name
+}
+
+// renderHealthcheck 生成健康检查。
+// 默认探活方式不能假设镜像里有 wget：精简 Alpine / distroless / scratch 都没有，
+// 会导致服务明明正常却一直 unhealthy。默认改用 PID 1 存活检查（任何镜像都可用）。
+// 需要真正的就绪探测时，在清单里写 runtime.healthcheck: http（要求镜像自带 wget 或 curl）。
+func renderHealthcheck(b *strings.Builder, m Manifest, port int) {
+	b.WriteString("    healthcheck:\n")
+	switch strings.ToLower(strings.TrimSpace(m.Runtime.Healthcheck)) {
+	case "http":
+		fmt.Fprintf(b, "      test: [\"CMD\", \"wget\", \"-qO-\", \"http://127.0.0.1:%d/readyz\"]\n", port)
+	case "none":
+		b.WriteString("      disable: true\n")
+		return
+	default:
+		b.WriteString("      test: [\"CMD-SHELL\", \"kill -0 1\"]\n")
+	}
+	b.WriteString("      interval: 5s\n      timeout: 3s\n      retries: 3\n      start_period: 15s\n")
+}
+
+// renderEgressProxy 域名白名单出网代理 sidecar（specs/024）：
+// 双宿主（插件网 + egress-net），插件容器经 HTTP(S)_PROXY 出网，白名单外一律拒绝。
+func renderEgressProxy(b *strings.Builder, m Manifest) {
+	fmt.Fprintf(b, "  egress-%s:\n", m.ID)
+	b.WriteString("    image: ubuntu/squid:latest\n")
+	fmt.Fprintf(b, "    volumes:\n      - ./gateway/egress-%s.conf:/etc/squid/squid.conf:ro\n", m.ID)
+	b.WriteString("    networks:\n" + netList([]string{m.NetworkName(), "egress-net"}))
 }
 
 func redisDepends() string {
