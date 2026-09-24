@@ -1,65 +1,98 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-pf-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Platfarm Console</title>
+<link rel="stylesheet" href="/platform/ui/v1/pf-ui.css">
+<script src="/platform/ui/v1/pf-ui.js" defer></script>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace;
-         background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; }
-  header { padding: 12px 20px; border-bottom: 1px solid #21262d; display: flex;
-           justify-content: space-between; align-items: center; }
-  h1 { font-size: 15px; margin: 0; color: #58a6ff; }
-  nav { display: flex; gap: 6px; flex-wrap: wrap; }
-  nav button { background: #161b22; }
-  nav button.active { border-color: #58a6ff; color: #58a6ff; }
+  html, body.pf-body { height: 100%; }
+  body.pf-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
   #wrap { flex: 1; display: flex; min-height: 0; }
-  #panel { flex: 1; overflow: auto; padding: 20px; }
-  iframe { flex: 1; border: 0; background: #fff; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #21262d; }
-  th { color: #8b949e; font-weight: normal; }
-  .state-running { color: #3fb950; } .state-exited, .state-absent { color: #f85149; }
-  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px;
-           padding: 4px 12px; cursor: pointer; font: inherit; }
-  button:hover { border-color: #58a6ff; }
-  input { background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-          color: #c9d1d9; padding: 8px 10px; font: inherit; width: 220px; }
-  #login { display: flex; gap: 10px; margin: 80px auto; width: fit-content; flex-direction: column; }
-  pre { background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 12px;
-        max-height: 320px; overflow: auto; white-space: pre-wrap; }
-  .muted { color: #8b949e; font-size: 12px; }
-  #msg { color: #f85149; min-height: 20px; }
-  section h2 { font-size: 14px; color: #8b949e; }
+  #panel {
+    flex: 1;
+    overflow: auto;
+    padding: 20px;
+  }
+  iframe {
+    flex: 1;
+    border: 0;
+    background: var(--pf-surface);
+  }
+  #login {
+    margin: 80px auto;
+    width: fit-content;
+    max-width: 360px;
+  }
+  #login .pf-card { min-width: 280px; }
+  pre.pf-log {
+    background: var(--pf-surface);
+    border: 1px solid var(--pf-border);
+    border-radius: var(--pf-radius);
+    padding: 12px;
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: var(--pf-font-mono);
+    font-size: var(--pf-fs-12);
+    color: var(--pf-text);
+    margin: 0;
+  }
+  #msg {
+    color: var(--pf-danger);
+    min-height: 20px;
+    font-size: var(--pf-fs-13);
+  }
+  .pf-section > h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  pf-topbar .pf-topbar-actions { gap: 12px; }
+  #nav { display: flex; gap: 6px; flex-wrap: wrap; }
 </style>
 </head>
-<body>
-<header>
-  <h1>⚙ Platfarm</h1>
+<body class="pf-body">
+<pf-topbar title="Platfarm 控制台">
   <nav id="nav" hidden></nav>
-  <div><span id="who" class="muted"></span> <button id="logout" hidden onclick="logout()">退出</button></div>
-</header>
+  <span id="who" class="pf-muted"></span>
+  <pf-button id="logout" variant="ghost" size="sm" hidden onclick="logout()">退出</pf-button>
+</pf-topbar>
 
 <div id="login">
-  <input id="u" placeholder="用户名" value="admin">
-  <input id="p" placeholder="密码" type="password">
-  <button onclick="login()">登录（需 admin 角色）</button>
-  <div id="msg"></div>
+  <div class="pf-card">
+    <form class="pf-form" onsubmit="event.preventDefault(); login();">
+      <button type="submit" hidden tabindex="-1" aria-hidden="true"></button>
+      <div class="pf-field">
+        <label for="u">用户名</label>
+        <input id="u" placeholder="用户名" value="admin" autocomplete="username">
+      </div>
+      <div class="pf-field">
+        <label for="p">密码</label>
+        <input id="p" placeholder="密码" type="password" autocomplete="current-password">
+      </div>
+      <pf-button variant="primary" onclick="login()">登录（需 admin 角色）</pf-button>
+      <div id="msg"></div>
+    </form>
+  </div>
 </div>
 
 <div id="wrap" hidden>
   <div id="panel">
-    <section>
-      <h2>服务 <button onclick="loadServices()">刷新</button></h2>
-      <table><thead><tr>
+    <section class="pf-section">
+      <h2>服务 <pf-button size="sm" onclick="loadServices()">刷新</pf-button></h2>
+      <table class="pf-table"><thead><tr>
         <th>ID</th><th>挂载</th><th>信任</th><th>语言</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="rows"></tbody></table>
     </section>
-    <section><h2>日志 <span id="logtitle" class="muted"></span></h2><pre id="logs">（点击服务行的"日志"查看）</pre></section>
-    <section><h2>审计</h2><pre id="audit">-</pre></section>
-    <p class="muted">SSO：登录后打开各应用后台无需再次登录。创建/卸载类操作仍走宿主机 pctl CLI。</p>
+    <section class="pf-section"><h2>日志 <span id="logtitle" class="pf-muted"></span></h2><pre id="logs" class="pf-log">（点击服务行的"日志"查看）</pre></section>
+    <section class="pf-section"><h2>审计</h2><pre id="audit" class="pf-log">-</pre></section>
+    <p class="pf-muted">SSO：登录后打开各应用后台无需再次登录。创建/卸载类操作仍走宿主机 pctl CLI。</p>
   </div>
   <iframe id="frame" hidden></iframe>
 </div>
@@ -107,18 +140,24 @@ async function buildNav() {
   let apps = [];
   try { apps = await api('api/apps'); } catch {}
   const nav = $('nav'); nav.hidden = false;
-  const tabs = [`<button class="active" onclick="showConsole(this)">控制台</button>`];
+  const tabs = [`<pf-button size="sm" variant="primary" onclick="showConsole(this)">控制台</pf-button>`];
   for (const a of apps) {
     if (!a.Embed) {
-      tabs.push(`<button onclick="window.open('${a.URL}','_blank')">${a.Title} ↗</button>`);
+      tabs.push(`<pf-button size="sm" variant="ghost" onclick="window.open('${a.URL}','_blank')">${a.Title} ↗</pf-button>`);
     } else {
-      tabs.push(`<button onclick="showApp(this,'${a.URL}')">${a.Title}</button>`);
+      tabs.push(`<pf-button size="sm" variant="ghost" onclick="showApp(this,'${a.URL}')">${a.Title}</pf-button>`);
     }
   }
   nav.innerHTML = tabs.join('');
 }
 
-function setActive(btn) { for (const b of $('nav').children) b.classList.remove('active'); btn.classList.add('active'); }
+function setActive(btn) {
+  const host = btn.closest('pf-button') || btn;
+  for (const b of $('nav').children) {
+    b.setAttribute('variant', 'ghost');
+  }
+  host.setAttribute('variant', 'primary');
+}
 function showConsole(btn) { setActive(btn); $('panel').hidden = false; $('frame').hidden = true; $('frame').src = 'about:blank'; }
 function showApp(btn, url) { setActive(btn); $('panel').hidden = true; $('frame').hidden = false; $('frame').src = url; }
 
@@ -129,13 +168,18 @@ function logout() {
 async function loadServices() {
   try {
     const rows = await api('api/services');
-    $('rows').innerHTML = rows.map(s => `<tr>
+    $('rows').innerHTML = rows.map(s => {
+      const stateLabel = s.Enabled ? s.State : 'disabled';
+      const tone = (s.State === 'exited' || s.State === 'absent') ? 'danger'
+        : (s.State === 'running' ? 'ok' : 'neutral');
+      return `<tr>
       <td>${s.ID}</td><td>${s.Mount}</td><td>${s.Trust}</td><td>${s.Lang}</td>
-      <td class="state-${s.State}">${s.Enabled ? s.State : 'disabled'} <span class="muted">${s.Status}</span></td>
+      <td><span class="pf-dot" data-tone="${tone}">${stateLabel}</span> <span class="pf-muted">${s.Status}</span></td>
       <td>
-        <button onclick="toggle('${s.ID}', ${!s.Enabled})">${s.Enabled ? '停用' : '启用'}</button>
-        <button onclick="logs('${s.ID}')">日志</button>
-      </td></tr>`).join('');
+        <pf-button size="sm" variant="ghost" onclick="toggle('${s.ID}', ${!s.Enabled})">${s.Enabled ? '停用' : '启用'}</pf-button>
+        <pf-button size="sm" variant="ghost" onclick="logs('${s.ID}')">日志</pf-button>
+      </td></tr>`;
+    }).join('');
     const audit = await api('api/audit');
     $('audit').textContent = (audit || []).filter(Boolean).join('\n') || '（暂无操作记录）';
   } catch (e) { if (e.message !== '未登录') alert(e.message); }

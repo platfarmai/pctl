@@ -37,6 +37,14 @@ func runServe(root string) error {
 		_, _ = w.Write(consoleHTML)
 	})
 	mux.HandleFunc("POST /login", s.handleLogin)
+	// specs/028：pf-ui 组件库静态分发（公开资产无鉴权；文件真相源 = 平台根 platform/ui/，
+	// 网关公开路由 /platform/ui 直达；版本化目录 v1/v2 即升级路径）
+	uiDir := filepath.Join(root, "platform", "ui")
+	uiFS := http.StripPrefix("/platform/ui/", http.FileServer(http.Dir(uiDir)))
+	mux.HandleFunc("GET /platform/ui/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		uiFS.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("GET /api/services", s.admin(s.handleServices))
 	mux.HandleFunc("GET /api/apps", s.admin(s.handleApps))
 	mux.HandleFunc("POST /api/services/{id}/toggle", s.admin(s.handleToggle))
