@@ -15,6 +15,7 @@ func runCheck(root string, e2e bool) error {
 		return err
 	}
 	fmt.Printf("清单校验通过：%d 个服务\n", len(manifests))
+	reportSDKDrift(root)
 
 	if !e2e {
 		return nil

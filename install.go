@@ -12,7 +12,32 @@ import (
 	"time"
 )
 
-// 插件生命周期（附录 H.6）：install → 校验 → 落盘 → sync → 开库开号 → 发凭据 → 起容器 → 契约测试。
+// preflightPlugin 安装前静态预检：镜像须带 tag 或 digest，内存限制须可解析。
+// 签名校验在 market install（cosign）；本地目录安装没有签名来源。
+func preflightPlugin(m Manifest) error {
+	if m.Source.Image == "" {
+		return fmt.Errorf("%s: 缺少 source.image", m.ID)
+	}
+	if m.Source.Digest == "" && !strings.Contains(m.Source.Image, ":") {
+		return fmt.Errorf("%s: source.image 既无 tag 也无 digest，无法锁定版本", m.ID)
+	}
+	if m.Resources.Memory != "" && !validMemory(m.Resources.Memory) {
+		return fmt.Errorf("%s: resources.memory %q 无法解析（示例 128m / 1g）", m.ID, m.Resources.Memory)
+	}
+	return nil
+}
+
+func validMemory(v string) bool {
+	v = strings.TrimSpace(strings.ToLower(v))
+	for _, suf := range []string{"k", "m", "g"} {
+		if strings.HasSuffix(v, suf) && len(v) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// 插件生命周期（附录 H.6）：install → 预检 → 落盘 → sync → 开库开号 → 发凭据 → 起容器 → 契约测试。
 // 测试失败自动 disable，不留半装状态。
 
 func runInstall(root, pluginDir string) error {
@@ -23,6 +48,9 @@ func runInstall(root, pluginDir string) error {
 	destDir := filepath.Join(root, "services", m.ID)
 	if _, err := os.Stat(destDir); err == nil {
 		return fmt.Errorf("%s 已存在（升级用 pctl upgrade）", destDir)
+	}
+	if err := preflightPlugin(m); err != nil {
+		return fmt.Errorf("安装预检未通过: %w", err)
 	}
 	if err := copyDir(pluginDir, destDir); err != nil {
 		return err

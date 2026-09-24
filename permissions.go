@@ -10,8 +10,8 @@ import (
 // 纪律：清单只声明"存在什么"，判定规则永远在服务代码内。
 
 var (
-	declNameRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)      // 角色名（严格，不含点）
-	scopeNameRE   = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)     // scope 名（允许点号分层，如 data.orders.read）
+	declNameRE    = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)  // 角色名（严格，不含点）
+	scopeNameRE   = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`) // scope 名（允许点号分层，如 data.orders.read）
 	callRE        = regexp.MustCompile(`^(svc-[a-z0-9-]+):([a-z][a-z0-9_.-]{0,63})$`)
 	tablePrefixRE = regexp.MustCompile(`^[a-z][a-z0-9_]*_$`)
 )
