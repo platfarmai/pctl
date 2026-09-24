@@ -54,6 +54,83 @@ func TestRenderHealthcheck_whenNone_thenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildContext_whenCustomServicesDir_thenFollowsManifest(t *testing.T) {
+	// 清单来自 _src/services 时，构建上下文必须跟着走，
+	// 否则 compose 会去 ./services/ 找 Dockerfile 而找不到。
+	m := Manifest{ID: "svc-ads", Root: "/run", Dir: "/run/_src/services/svc-ads"}
+	if got := buildContext(m); got != "./_src/services/svc-ads" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBuildContext_whenDefaultLayout_thenServicesPath(t *testing.T) {
+	m := Manifest{ID: "svc-demo", Root: "/run", Dir: "/run/services/svc-demo"}
+	if got := buildContext(m); got != "./services/svc-demo" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestBuildContext_whenDirMissing_thenFallback(t *testing.T) {
+	if got := buildContext(Manifest{ID: "svc-x"}); got != "./services/svc-x" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestRenderServicesCompose_whenServicesOnly_thenNoGatewayOrNetworks(t *testing.T) {
+	// 镜像部署的 compose.yml 自带 gateway 与网络；生成文件再定义一次会让
+	// docker compose 报 "gateway depends on undefined service redis"。
+	m := Manifest{ID: "svc-ads", Root: "/run", Dir: "/run/_src/services/svc-ads"}
+	out := renderServicesCompose([]Manifest{m}, true)
+	for _, forbidden := range []string{"  gateway:", "\nnetworks:", "\nvolumes:"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("services-only 输出不应含 %q:\n%s", forbidden, out)
+		}
+	}
+	if !strings.Contains(out, "  svc-ads:") {
+		t.Fatalf("服务定义丢失:\n%s", out)
+	}
+}
+
+func TestRenderServicesCompose_whenFullMode_thenKeepsGateway(t *testing.T) {
+	m := Manifest{ID: "svc-ads", Root: "/run", Dir: "/run/services/svc-ads"}
+	out := renderServicesCompose([]Manifest{m}, false)
+	if !strings.Contains(out, "  gateway:") {
+		t.Fatalf("完整模式必须含 gateway:\n%s", out)
+	}
+}
+
+func TestComposeServicesOnly_whenRunDirHasGateway_thenAutoDetect(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yml"),
+		[]byte("services:\n  gateway:\n    image: kong:3.9\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !composeServicesOnly(root) {
+		t.Fatal("运行目录已有 gateway 时应自动切到 services-only")
+	}
+}
+
+func TestComposeServicesOnly_whenNoComposeYml_thenFull(t *testing.T) {
+	if composeServicesOnly(t.TempDir()) {
+		t.Fatal("源码仓布局应保持完整模式")
+	}
+}
+
+func TestComposeServicesOnly_whenExplicitlyDisabled_thenFull(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yml"),
+		[]byte("services:\n  gateway:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"),
+		[]byte("PF_COMPOSE_SERVICES_ONLY=0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if composeServicesOnly(root) {
+		t.Fatal("显式关闭应优先于自动检测")
+	}
+}
+
 func TestServicesDirs_whenUnset_thenDefaultServices(t *testing.T) {
 	root := t.TempDir()
 	got := servicesDirs(root)

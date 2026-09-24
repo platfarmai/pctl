@@ -2,13 +2,20 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 )
 
 // renderServicesCompose 生成 docker-compose.services.yml：
 // gateway（多宿主进所有插件网络）+ plugin-pg（有第三方插件时）+ 各服务 + 插件网络。
 // gateway/plugin-pg 放生成文件的原因：它们的 networks 列表随插件增减（附录 H.4）。
-func renderServicesCompose(manifests []Manifest) string {
+//
+// servicesOnly=true 时只输出服务定义，不含 gateway / networks / volumes：
+// 镜像部署（compose.release.yml）的运行目录自带 gateway 与网络，两边都定义会冲突
+// （"service gateway depends on undefined service redis"）。开关见 PF_COMPOSE_SERVICES_ONLY。
+func renderServicesCompose(manifests []Manifest, servicesOnly bool) string {
 	var pluginNets []string
 	hasThirdParty := false
 	for _, m := range manifests {
@@ -21,9 +28,11 @@ func renderServicesCompose(manifests []Manifest) string {
 	var b strings.Builder
 	b.WriteString(generatedHeader)
 	b.WriteString("services:\n")
-	renderGateway(&b, pluginNets)
-	if hasThirdParty {
-		renderPluginPG(&b, pluginNets)
+	if !servicesOnly {
+		renderGateway(&b, pluginNets)
+		if hasThirdParty {
+			renderPluginPG(&b, pluginNets)
+		}
 	}
 	hasEgress := false
 	for _, m := range manifests {
@@ -32,6 +41,10 @@ func renderServicesCompose(manifests []Manifest) string {
 			renderEgressProxy(&b, m)
 			hasEgress = true
 		}
+	}
+	if servicesOnly {
+		// 网络与卷由运行目录的 compose.yml 负责，这里重复定义会冲突。
+		return b.String()
 	}
 	if len(pluginNets) > 0 || hasEgress {
 		b.WriteString("\nnetworks:\n")
@@ -60,6 +73,8 @@ func renderGateway(b *strings.Builder, pluginNets []string) {
       KONG_NGINX_WORKER_PROCESSES: ${KONG_NGINX_WORKER_PROCESSES:-1} # Redis 限流时可改为 auto
       KONG_UNTRUSTED_LUA: sandbox # pre-function 需 require("cjson")（SSO/开放平台 scope 校验，specs/006+009）
       KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: cjson
+      PF_DATA_SECRET: ${PF_DATA_SECRET:-} # 响应加密主密钥（附录 F）；空 = 不加密
+      PF_CRYPTO: ${PF_CRYPTO:-on}
     ports:
       - "18000:8000"
     volumes:
@@ -110,7 +125,7 @@ func renderService(b *strings.Builder, m Manifest) {
 			fmt.Fprintf(b, "    cpus: %s\n", m.Resources.Cpus)
 		}
 	} else {
-		fmt.Fprintf(b, "    build: ./services/%s\n", m.ID)
+		fmt.Fprintf(b, "    build: %s\n", buildContext(m))
 	}
 	hasEgress := m.IsThirdParty() && len(m.Permissions.Egress) > 0
 	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 || m.Data.TablePrefix != "" || hasEgress {
@@ -159,6 +174,37 @@ func renderService(b *strings.Builder, m Manifest) {
 	fmt.Fprintf(b, "    stop_grace_period: %ds\n", drain+5)
 	renderHealthcheck(b, m, port)
 	b.WriteString("    networks:\n" + netList([]string{m.NetworkName()}))
+}
+
+// composeServicesOnly 判断是否只输出服务定义。
+// 显式设 PF_COMPOSE_SERVICES_ONLY 优先；否则自动检测：运行目录的 compose.yml
+// 若已定义 gateway（镜像部署 compose.release.yml 就是如此），生成文件里再定义一次会冲突。
+func composeServicesOnly(root string) bool {
+	switch strings.ToLower(strings.TrimSpace(envFromRoot(root, "PF_COMPOSE_SERVICES_ONLY"))) {
+	case "1", "true", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "compose.yml"))
+	if err != nil {
+		return false
+	}
+	return regexp.MustCompile(`(?m)^\s{2}gateway:`).Match(raw)
+}
+
+// buildContext 返回第一方服务的构建上下文（相对运行目录）。
+// 清单可能来自 PF_SERVICES_DIR 指定的其它目录（如 _src/services），
+// 写死 ./services/<id> 会让 compose 找不到 Dockerfile。
+func buildContext(m Manifest) string {
+	if m.Dir == "" {
+		return "./services/" + m.ID
+	}
+	rel, err := filepath.Rel(m.Root, m.Dir)
+	if err != nil {
+		return "./services/" + m.ID
+	}
+	return "./" + filepath.ToSlash(rel)
 }
 
 // scopedEnvName 把 svc-ads + DATABASE_URL 变成 SVC_ADS_DATABASE_URL，

@@ -45,7 +45,7 @@ func runSync(root string) error {
 	if err := os.WriteFile(filepath.Join(root, "gateway", "kong.yml"), []byte(kong), 0o644); err != nil {
 		return fmt.Errorf("write kong.yml: %w", err)
 	}
-	compose := renderServicesCompose(enabled)
+	compose := renderServicesCompose(enabled, composeServicesOnly(root))
 	if err := os.WriteFile(filepath.Join(root, "docker-compose.services.yml"), []byte(compose), 0o644); err != nil {
 		return fmt.Errorf("write docker-compose.services.yml: %w", err)
 	}

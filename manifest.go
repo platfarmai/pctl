@@ -34,6 +34,11 @@ type Manifest struct {
 		Required            bool     `yaml:"required"`
 		AcceptServiceTokens []string `yaml:"accept_service_tokens"`
 	} `yaml:"auth"`
+	// Crypto 响应加密（附录 F）：网关对匹配响应做 AES-GCM，默认关。
+	Crypto struct {
+		EncryptResponse bool     `yaml:"encrypt_response"`
+		Exempt          []string `yaml:"exempt"`
+	} `yaml:"crypto"`
 	Permissions struct {
 		NeedsIdentity bool     `yaml:"needs_identity"`
 		Calls         []string `yaml:"calls"`
@@ -66,7 +71,10 @@ type Manifest struct {
 		Scopes []NamedDecl `yaml:"scopes"`
 	} `yaml:"exposes"`
 	OpenAPI []OpenRoute `yaml:"open_api"` // 开放平台路由→scope 映射（specs/009）
-	AdminUI struct {    // 可嵌入的管理后台入口（specs/006）
+		Docs struct { // 可选：服务自己的 OpenAPI 文档地址，聚合进网关 /docs
+			OpenAPI string `yaml:"openapi"`
+		} `yaml:"docs"`
+		AdminUI struct { // 可嵌入的管理后台入口（specs/006）
 		Path  string `yaml:"path"`  // 相对 mount.path，如 /console
 		Embed bool   `yaml:"embed"` // 允许被平台壳 iframe 嵌入
 		Title string `yaml:"title"` // 壳里显示的名字
@@ -74,9 +82,11 @@ type Manifest struct {
 	} `yaml:"admin_ui"`
 	Test struct {
 		Command string `yaml:"command"`
+		Extra   string `yaml:"extra"` // 业务自有测试命令，check --e2e 在三件套之后执行
 	} `yaml:"test"`
 
-	Dir string `yaml:"-"`
+	Dir  string `yaml:"-"` // 清单所在目录
+	Root string `yaml:"-"` // 运行目录，用于把 Dir 算成相对的构建上下文
 }
 
 // NamedDecl 角色/scope 声明：name 给机器，desc 给通用 UI 与市场弹窗渲染。
@@ -175,6 +185,7 @@ func loadManifests(root string) ([]Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
+		m.Root = root
 		manifests = append(manifests, m)
 	}
 	return manifests, nil
