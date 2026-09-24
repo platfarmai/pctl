@@ -71,6 +71,10 @@ func run(args []string) error {
 		return runUninstall(root, args[1], purge)
 	case "market":
 		return runMarket(root, args[1:])
+	case "backup":
+		return runBackup(root, args[1:])
+	case "restore":
+		return runRestore(root, args[1:])
 	case "serve":
 		return runServe(root)
 	case "upgrade":
@@ -98,7 +102,9 @@ func usageError() error {
   pctl enable|disable <svc-id>      启停服务/插件（摘挂路由）
   pctl uninstall <svc-id> [--purge] 卸载（--purge 连数据一起删）
   pctl serve                      启动 Web 控制台（容器内运行，见 compose console 服务）
-  pctl upgrade <svc-id> <新目录>     升级（卸载保数据 + 重装）`)
+  pctl upgrade <svc-id> <新目录>     升级（卸载保数据 + 重装）
+  pctl backup [--out dir]           备份平台库/插件库/密钥/插件凭据（specs/020）
+  pctl restore <目录> --force        从备份恢复（覆盖现有数据）`)
 }
 
 // findRoot 从当前目录向上找平台根（以 gateway/ 目录 + docker-compose.yml 为标志）。

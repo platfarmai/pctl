@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // 插件生命周期（附录 H.6）：install → 校验 → 落盘 → sync → 开库开号 → 发凭据 → 起容器 → 契约测试。
@@ -154,6 +155,15 @@ func runUninstall(root, id string, purge bool) error {
 		return err
 	}
 	if purge && merr == nil && m.Data.Database != "" {
+		// specs/020：drop 前自动快照，误删可救
+		if dump, derr := composeExecCapture(root, "plugin-pg", "pg_dump", "-U", "postgres", m.Data.Database); derr == nil {
+			snapDir := filepath.Join(root, "backups")
+			_ = os.MkdirAll(snapDir, 0o700)
+			snap := filepath.Join(snapDir, fmt.Sprintf("%s-purge-%s.sql", id, time.Now().Format("20060102-150405")))
+			if os.WriteFile(snap, []byte(dump), 0o600) == nil {
+				fmt.Printf("已快照插件库 → %s\n", snap)
+			}
+		}
 		for _, stmt := range []string{
 			fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, m.Data.Database),
 			fmt.Sprintf(`DROP ROLE IF EXISTS %s`, m.Data.Database),
