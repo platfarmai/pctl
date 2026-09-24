@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -52,8 +54,38 @@ func runSync(root string) error {
 	if err := writeEgressConfs(root, enabled); err != nil {
 		return err
 	}
+	if err := writeDocsIndex(root, enabled); err != nil {
+		return err
+	}
 	fmt.Printf("sync 完成：%d 个服务（enabled）→ kong.yml + docker-compose.services.yml\n", len(enabled))
 	return nil
+}
+
+// writeDocsIndex 汇总清单 docs.openapi，供网关 /docs 展示。无声明时写空列表。
+func writeDocsIndex(root string, manifests []Manifest) error {
+	type entry struct {
+		Service string `json:"service"`
+		OpenAPI string `json:"openapi"`
+	}
+	var entries []entry
+	for _, m := range manifests {
+		if m.Docs.OpenAPI == "" {
+			continue
+		}
+		entries = append(entries, entry{m.ID, m.Docs.OpenAPI})
+	}
+	if entries == nil {
+		entries = []entry{}
+	}
+	raw, err := json.MarshalIndent(map[string]any{"services": entries}, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(root, "docs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "index.json"), append(raw, '\n'), 0o644)
 }
 
 // writeEgressConfs 为声明 permissions.egress 的第三方插件生成 squid 域名白名单配置
@@ -208,56 +240,265 @@ kong.service.request.set_header("X-PF-App-Key", claims.appKey or "")`, "__SCOPE_
 	return b.String()
 }
 
-// serviceCallGateYAML 网关级 calls 放行（specs/025，附录 H 降级①兑现）：
-// service token 访问服务 X 必须携带 "X" 或 "X:*" 前缀 scope（scope 来源 = 清单 permissions.calls，
-// auth 按 calls 签发）。用户 access token / app token 不受影响。
-// ⚠️ Kong 同名插件按"最具体实例"生效：路由级 pre-function 会覆盖全局 SSO cookie 映射，
-// 故此 Lua 必须内含 cookie→Bearer 逻辑（specs/006 的超集）。
-func serviceCallGateYAML(svcID, indent string) string {
-	lua := strings.ReplaceAll(`local auth = kong.request.get_header("authorization")
-if not auth then
-  local ck = kong.request.get_header("cookie")
-  if ck then
-    local t = string.match(ck, "pf_access=([^;%s]+)")
-    if t then auth = "Bearer " .. t; kong.service.request.set_header("authorization", auth) end
-  end
-end
-if auth then
-  local token = string.gsub(auth, "^Bearer%s+", "")
-  local seg = {}
-  for s in string.gmatch(token, "[^.]+") do seg[#seg+1] = s end
-  if #seg >= 2 then
-    local b64 = seg[2]:gsub("-", "+"):gsub("_", "/")
-    local pad = #b64 % 4
-    if pad > 0 then b64 = b64 .. string.rep("=", 4 - pad) end
-    local raw = ngx.decode_base64(b64)
-    if raw then
-      local ok_json, claims = pcall(function() return require("cjson").decode(raw) end)
-      if ok_json and claims and claims.tokenType == "service" then
-        local allowed = false
-        for _, s in ipairs(claims.scopes or {}) do
-          if s == "__SVC__" or string.sub(s, 1, string.len("__SVC__:")) == "__SVC__:" then allowed = true break end
+// adminRoleGateLua 网关执行清单 admin_routes 的 L2：用户 token 必须 role=admin。
+// service/app token 不带 role，由各自的 scope 闸门管，这里放行。
+// ⚠️ 返回裸 Lua（不含 return 顶层退出），交由 mergeAccessLua 包进 do..end 合并到单个 pre-function。
+func adminRoleGateLua() string {
+	return `do
+  local auth = kong.request.get_header("authorization")
+  if auth then
+    local token = string.gsub(auth, "^Bearer%s+", "")
+    local seg = {}
+    for s in string.gmatch(token, "[^.]+") do seg[#seg+1] = s end
+    if #seg >= 2 then
+      local b64 = seg[2]:gsub("-", "+"):gsub("_", "/")
+      local pad = #b64 % 4
+      if pad > 0 then b64 = b64 .. string.rep("=", 4 - pad) end
+      local raw = ngx.decode_base64(b64)
+      if raw then
+        local ok, claims = pcall(function() return require("cjson").decode(raw) end)
+        if ok and claims and claims.tokenType == "access" and claims.role ~= "admin" then
+          return kong.response.exit(403, { error = "admin role required" })
         end
-        if not allowed then
-          return kong.response.exit(403, { error = "service token lacks a __SVC__ scope (declare it in permissions.calls)" })
+      end
+    end
+  end
+end`
+}
+
+// revocationGateLua 吊销即时生效：auth 把 tokenId 与用户级截止写进 Redis
+// （pf:revoke:<tokenId> / pf:userkill:<userId>），网关在验签后回查。
+// 无 Redis 时返回空串——退回各服务本地验签的既有行为。返回裸 Lua（do..end 包裹）。
+func revocationGateLua() string {
+	if !redisRateLimit() {
+		return ""
+	}
+	conn, err := parseRedisURL(os.Getenv("PF_REDIS_URL"))
+	if err != nil {
+		conn = redisConn{Host: "redis", Port: 6379}
+	}
+	auth := "nil, nil"
+	if conn.Password != "" {
+		auth = fmt.Sprintf("%q, %q", conn.Password, conn.Password)
+	}
+	db := strconv.Itoa(conn.Database)
+	return fmt.Sprintf(`do
+  local authz = kong.request.get_header("authorization")
+  if authz then
+    local token = string.gsub(authz, "^Bearer%%s+", "")
+    local seg = {}
+    for s in string.gmatch(token, "[^.]+") do seg[#seg+1] = s end
+    if #seg >= 2 then
+      local b64 = seg[2]:gsub("-", "+"):gsub("_", "/")
+      local pad = #b64 %% 4
+      if pad > 0 then b64 = b64 .. string.rep("=", 4 - pad) end
+      local raw = ngx.decode_base64(b64)
+      local ok, claims = raw and pcall(function() return require("cjson").decode(raw) end)
+      if ok and claims and claims.tokenType == "access" then
+        local redis = require("resty.redis")
+        local red = redis:new()
+        red:set_timeouts(200, 200, 200)
+        if red:connect(%q, %d) then
+          if red:auth(%s) then
+            red:select(%s)
+            if claims.tokenId and red:exists("pf:revoke:" .. claims.tokenId) == 1 then
+              red:set_keepalive(10000, 50)
+              return kong.response.exit(401, { error = "token revoked" })
+            end
+            if claims.userId and claims.iat then
+              local cut = red:get("pf:userkill:" .. tostring(claims.userId))
+              if cut and cut ~= ngx.null and tonumber(cut) and claims.iat < tonumber(cut) then
+                red:set_keepalive(10000, 50)
+                return kong.response.exit(401, { error = "token revoked" })
+              end
+            end
+            red:set_keepalive(10000, 50)
+          else
+            red:close()
+          end
+        end
+      end
+    end
+  end
+end`, conn.Host, conn.Port, auth, db)
+}
+
+// mergeAccessLua 把多段 access Lua 合并成一个 access 块（各段已 do..end 自包裹），
+// 避免同一路由挂多个内容相同/相近的 pre-function 触发 Kong 实体唯一性冲突。
+func mergeAccessLua(segments ...string) string {
+	var parts []string
+	for _, s := range segments {
+		if strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// preFunctionYAML 单 access 段的 pre-function（全局 SSO 等仍用它）。
+func preFunctionYAML(indent, lua string) string {
+	return preFunctionPhases(indent, map[string]string{"access": lua})
+}
+
+// preFunctionPhases 一个 pre-function 实例可挂多个阶段。加密放 header/body filter，
+// 一条路由只产出这一个 pre-function 实体，杜绝同名插件冲突。
+func preFunctionPhases(indent string, phases map[string]string) string {
+	order := []string{"access", "header_filter", "body_filter"}
+	var b strings.Builder
+	b.WriteString(indent + "- name: pre-function\n")
+	b.WriteString(indent + "  config:\n")
+	for _, phase := range order {
+		lua, ok := phases[phase]
+		if !ok || lua == "" {
+			continue
+		}
+		b.WriteString(indent + "    " + phase + ":\n")
+		b.WriteString(indent + "      - |\n")
+		for _, line := range strings.Split(lua, "\n") {
+			b.WriteString(indent + "          " + line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// serviceCallGateLua 网关级 calls 放行（specs/025，附录 H 降级①兑现）：
+// service token 访问服务 X 必须携带 "X" 或 "X:*" 前缀 scope（scope 来源 = 清单 permissions.calls）。
+// 内含 cookie→Bearer 映射（specs/006 超集）。返回裸 Lua（do..end 包裹）。
+func serviceCallGateLua(svcID string) string {
+	return strings.ReplaceAll(`do
+  local auth = kong.request.get_header("authorization")
+  if not auth then
+    local ck = kong.request.get_header("cookie")
+    if ck then
+      local t = string.match(ck, "pf_access=([^;%s]+)")
+      if t then
+        kong.service.request.set_header("authorization", "Bearer " .. t)
+        auth = kong.request.get_header("authorization")
+      end
+    end
+  end
+  if auth then
+    local token = string.gsub(auth, "^Bearer%s+", "")
+    local seg = {}
+    for s in string.gmatch(token, "[^.]+") do seg[#seg+1] = s end
+    if #seg >= 2 then
+      local b64 = seg[2]:gsub("-", "+"):gsub("_", "/")
+      local pad = #b64 % 4
+      if pad > 0 then b64 = b64 .. string.rep("=", 4 - pad) end
+      local raw = ngx.decode_base64(b64)
+      if raw then
+        local ok_json, claims = pcall(function() return require("cjson").decode(raw) end)
+        if ok_json and claims and claims.tokenType == "service" then
+          local allowed = false
+          for _, s in ipairs(claims.scopes or {}) do
+            if s == "__SVC__" or string.sub(s, 1, string.len("__SVC__:")) == "__SVC__:" then allowed = true break end
+          end
+          if not allowed then
+            return kong.response.exit(403, { error = "service token lacks a __SVC__ scope (declare it in permissions.calls)" })
+          end
         end
       end
     end
   end
 end`, "__SVC__", svcID)
-
-	var b strings.Builder
-	b.WriteString(indent + "- name: pre-function\n")
-	b.WriteString(indent + "  config:\n")
-	b.WriteString(indent + "    access:\n")
-	b.WriteString(indent + "      - |\n")
-	for _, line := range strings.Split(lua, "\n") {
-		b.WriteString(indent + "          " + line + "\n")
-	}
-	return b.String()
 }
 
-// rateLimitByAppYAML 按 app 限流（X-PF-App-Key）。redis 可用则集中计数。
+// protectedGateYAML 受保护路由的唯一 pre-function：合并 calls 闸门 + 吊销校验，
+// 加密时再挂 header/body filter。一条路由一个实体。
+func protectedGateYAML(svcID, indent string, encrypt bool, exempt []string) string {
+	phases := map[string]string{
+		"access": mergeAccessLua(serviceCallGateLua(svcID), revocationGateLua()),
+	}
+	// 加密仅在清单声明且 PF_DATA_SECRET 已配置时挂钩（沙箱无 os.getenv，密钥生成期内联）。
+	if secret := strings.TrimSpace(os.Getenv("PF_DATA_SECRET")); encrypt && secret != "" {
+		phases["header_filter"] = cryptoHeaderLua(exempt)
+		phases["body_filter"] = cryptoBodyLua(secret)
+	}
+	return preFunctionPhases(indent, phases)
+}
+
+// adminGateYAML admin 路由的唯一 pre-function：合并 role 检查 + 吊销校验。
+func adminGateYAML(indent string) string {
+	return preFunctionPhases(indent, map[string]string{
+		"access": mergeAccessLua(adminRoleGateLua(), revocationGateLua()),
+	})
+}
+
+func cryptoHeaderLua(exempt []string) string {
+	var list strings.Builder
+	list.WriteString("{")
+	for i, e := range exempt {
+		if i > 0 {
+			list.WriteString(", ")
+		}
+		list.WriteString(strconv.Quote(e))
+	}
+	list.WriteString("}")
+	// Kong pre-function 沙箱里 os.getenv 为 nil；密钥于 sync 生成期决定是否内联，运行期不读环境。
+	return strings.ReplaceAll(`local status = kong.response.get_status()
+if status < 200 or status >= 300 then return end
+local ct = kong.response.get_header("Content-Type") or ""
+if not string.find(ct, "json", 1, true) then return end
+local path = kong.request.get_path()
+local exempt = __EXEMPT__
+for _, e in ipairs(exempt) do
+  if path == e or (e ~= "" and string.sub(path, -#e) == e) then return end
+end
+local auth = kong.request.get_header("authorization")
+if not auth then return end
+local token = string.gsub(auth, "^Bearer%s+", "")
+local seg = {}
+for s in string.gmatch(token, "[^.]+") do seg[#seg+1] = s end
+if #seg < 2 then return end
+local b64 = seg[2]:gsub("-", "+"):gsub("_", "/")
+local pad = #b64 % 4
+if pad > 0 then b64 = b64 .. string.rep("=", 4 - pad) end
+local raw = ngx.decode_base64(b64)
+if not raw then return end
+local ok, claims = pcall(function() return require("cjson").decode(raw) end)
+if not ok or not claims or claims.tokenType ~= "access" or not claims.tokenId then return end
+ngx.ctx.pf_enc = true
+ngx.ctx.pf_kid = claims.tokenId
+kong.response.set_header("X-PF-Encrypted", "1")
+kong.response.clear_header("Content-Length")`, "__EXEMPT__", list.String())
+}
+
+// cryptoBodyLua 缓冲整个响应体，末块时 HKDF 派生会话密钥并 AES-256-GCM 加密。
+// secret 于生成期内联（沙箱无 os.getenv）；secret 用 %q 转义防注入。
+func cryptoBodyLua(secret string) string {
+	return fmt.Sprintf(`if not ngx.ctx.pf_enc then return end
+local chunk = ngx.arg[1] or ""
+ngx.ctx.pf_buf = (ngx.ctx.pf_buf or "") .. chunk
+if not ngx.arg[2] then
+  ngx.arg[1] = nil
+  return
+end
+local plain = ngx.ctx.pf_buf or ""
+local secret = %q
+local kdf = require("resty.openssl.kdf")
+local key = kdf.derive({
+  type = kdf.HKDF, outlen = 32, md = "sha256",
+  salt = ngx.ctx.pf_kid, hkdf_key = secret, hkdf_info = "pf-data",
+  mode = kdf.HKDEF_MODE_EXTRACT_AND_EXPAND,
+})
+if not key then
+  ngx.arg[1] = plain
+  return
+end
+local iv = require("resty.random").bytes(12)
+local c = require("resty.openssl.cipher").new("aes-256-gcm")
+local ct = c:encrypt(key, iv, plain, false)
+if not ct then
+  ngx.arg[1] = plain
+  return
+end
+local tag = c:get_aead_tag()
+ngx.arg[1] = require("cjson").encode({
+  v = 1, alg = "A256GCM", kid = ngx.ctx.pf_kid,
+  iv = ngx.encode_base64(iv), ct = ngx.encode_base64(ct .. tag),
+})
+ngx.arg[2] = true`, secret)
+}
 func rateLimitByAppYAML(minute int, indent string) string {
 	if redisRateLimit() {
 		conn, err := parseRedisURL(os.Getenv("PF_REDIS_URL"))
@@ -279,6 +520,7 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	b.WriteString("      - name: auth-route\n        paths: [\"/auth\"]\n        strip_path: false\n        plugins:\n")
 	b.WriteString(rateLimitYAML(60, "          "))
 	b.WriteString("      - name: platform-root\n        paths: [\"/\"]\n        strip_path: false\n")
+	b.WriteString("      - name: platform-docs\n        paths: [\"/docs\"]\n        strip_path: false\n")
 	// SSO 统一管理壳：console 经网关同源挂载（specs/006）
 	b.WriteString("  - name: console\n    url: http://console:8080\n    retries: 2\n    routes:\n")
 	b.WriteString("      - name: platform-console\n        paths: [\"/platform/console\"]\n        strip_path: true\n")
@@ -298,13 +540,30 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 			b.WriteString(openScopeGateYAML(o.Scope, "          "))
 			b.WriteString(rateLimitByAppYAML(60, "          "))
 		}
+		// L2：admin_routes 单独成路由，网关强制 role=admin（比 -protected 更具体，优先命中）
+		for i, route := range m.Mount.AdminRoutes {
+			fields := strings.Fields(route)
+			method, rel := "", fields[len(fields)-1]
+			if len(fields) == 2 {
+				method = strings.ToUpper(fields[0])
+			}
+			full := strings.TrimSuffix(m.Mount.Path+strings.TrimSuffix(strings.TrimSuffix(rel, "/*"), "/"), "/")
+			fmt.Fprintf(&b, "      - name: %s-admin-%d\n        paths: [\"%s\"]\n", m.ID, i, full)
+			if method != "" && method != "*" {
+				fmt.Fprintf(&b, "        methods: [\"%s\"]\n", method)
+			}
+			fmt.Fprintf(&b, "        strip_path: %v\n        plugins:\n", m.Mount.StripPath)
+			b.WriteString("          - name: jwt\n            config: { key_claim_name: iss, claims_to_verify: [\"exp\"] }\n")
+			b.WriteString(adminGateYAML("          "))
+		}
 		fmt.Fprintf(&b, "      - name: %s-protected\n        paths: [\"%s\"]\n        strip_path: %v\n", m.ID, m.Mount.Path, m.Mount.StripPath)
 		if m.Auth.Required || m.Limits.RatePerMinute > 0 {
 			b.WriteString("        plugins:\n")
 		}
 		if m.Auth.Required {
 			b.WriteString("          - name: jwt\n            config: { key_claim_name: iss, claims_to_verify: [\"exp\"] }\n")
-			b.WriteString(serviceCallGateYAML(m.ID, "          ")) // 网关级 calls 放行（specs/025）
+			// 一条路由只挂一个 pre-function：calls 闸门 + 吊销校验（+ 可选加密）合并
+			b.WriteString(protectedGateYAML(m.ID, "          ", m.Crypto.EncryptResponse, m.Crypto.Exempt))
 		}
 		if m.Limits.RatePerMinute > 0 {
 			b.WriteString(rateLimitYAML(m.Limits.RatePerMinute, "          "))

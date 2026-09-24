@@ -71,10 +71,8 @@ func renderGateway(b *strings.Builder, pluginNets []string) {
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_LISTEN: "127.0.0.1:8001"
       KONG_NGINX_WORKER_PROCESSES: ${KONG_NGINX_WORKER_PROCESSES:-1} # Redis 限流时可改为 auto
-      KONG_UNTRUSTED_LUA: sandbox # pre-function 需 require("cjson")（SSO/开放平台 scope 校验，specs/006+009）
-      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: cjson
-      PF_DATA_SECRET: ${PF_DATA_SECRET:-} # 响应加密主密钥（附录 F）；空 = 不加密
-      PF_CRYPTO: ${PF_CRYPTO:-on}
+      KONG_UNTRUSTED_LUA: sandbox # pre-function 需 require（SSO/scope 校验 specs/006+009，响应加密附录 F）
+      KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: cjson,resty.openssl.kdf,resty.openssl.cipher,resty.random
     ports:
       - "18000:8000"
     volumes:
