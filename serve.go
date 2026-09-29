@@ -45,6 +45,10 @@ func runServe(root string) error {
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 		uiFS.ServeHTTP(w, r)
 	})
+	// 加密 SDK 与组件库同源（附录 F）。源文件在 sdk/js，不复制进 platform/ui。
+	sdkJS := http.StripPrefix("/platform/ui/v1/", http.FileServer(http.Dir(filepath.Join(root, "sdk", "js"))))
+	mux.HandleFunc("GET /platform/ui/v1/pf-crypto.js", sdkJS.ServeHTTP)
+	mux.HandleFunc("GET /platform/ui/v1/pf-crypto-core.js", sdkJS.ServeHTTP)
 	mux.HandleFunc("GET /api/services", s.admin(s.handleServices))
 	mux.HandleFunc("GET /api/apps", s.admin(s.handleApps))
 	mux.HandleFunc("POST /api/services/{id}/toggle", s.admin(s.handleToggle))

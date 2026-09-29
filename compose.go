@@ -126,8 +126,12 @@ func renderService(b *strings.Builder, m Manifest) {
 		fmt.Fprintf(b, "    build: %s\n", buildContext(m))
 	}
 	hasEgress := m.IsThirdParty() && len(m.Permissions.Egress) > 0
-	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 || m.Data.TablePrefix != "" || hasEgress {
+	needsIdentity := !m.IsThirdParty() || m.Permissions.NeedsIdentity
+	if len(m.Runtime.Env) > 0 || len(m.Auth.AcceptServiceTokens) > 0 || m.Data.TablePrefix != "" || hasEgress || needsIdentity {
 		b.WriteString("    environment:\n")
+		if needsIdentity {
+			b.WriteString("      JWT_EXTRA_PUB_DIR: /pf/jwt-extra\n")
+		}
 		if hasEgress { // specs/024：出网只能走白名单代理
 			fmt.Fprintf(b, "      HTTP_PROXY: http://egress-%s:3128\n", m.ID)
 			fmt.Fprintf(b, "      HTTPS_PROXY: http://egress-%s:3128\n", m.ID)
@@ -160,6 +164,7 @@ func renderService(b *strings.Builder, m Manifest) {
 	// 验签公钥挂载：第一方默认给；第三方按 needs_identity（公钥非密，可安全下发）
 	if !m.IsThirdParty() || m.Permissions.NeedsIdentity {
 		b.WriteString("    volumes:\n      - ./.keys/pf-auth.pem.pub:/pf/jwt.pub:ro\n")
+		b.WriteString("      - ./.keys/jwks-extra:/pf/jwt-extra:ro\n")
 	}
 	drain := m.Runtime.DrainSeconds
 	if drain <= 0 {

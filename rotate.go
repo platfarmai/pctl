@@ -6,13 +6,32 @@ package main
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 )
+
+// pubKeyID 与 auth 的 keyIDOf 同一算法：公钥模数 SHA-256 前 8 字节 hex。
+func pubKeyID(pubPEM []byte) string {
+	block, _ := pem.Decode(pubPEM)
+	if block == nil {
+		return "unknown"
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "unknown"
+	}
+	pub, ok := key.(*rsa.PublicKey)
+	if !ok {
+		return "unknown"
+	}
+	sum := sha256.Sum256(pub.N.Bytes())
+	return hex.EncodeToString(sum[:8])
+}
 
 func runRotateKeys(root string) error {
 	keyDir := filepath.Join(root, ".keys")
@@ -31,10 +50,12 @@ func runRotateKeys(root string) error {
 	if err := os.MkdirAll(extra, 0o700); err != nil {
 		return err
 	}
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	if err := os.WriteFile(filepath.Join(extra, stamp+".pub"), oldPub, 0o644); err != nil {
+	// 文件名 = 旧公钥的 kid（与 auth 的 keyIDOf 同一算法），服务按 token kid 命中它。
+	kid := pubKeyID(oldPub)
+	if err := os.WriteFile(filepath.Join(extra, kid+".pub"), oldPub, 0o644); err != nil {
 		return err
 	}
+	stamp := kid
 	retired := filepath.Join(keyDir, "retired")
 	_ = os.MkdirAll(retired, 0o700)
 	if err := os.WriteFile(filepath.Join(retired, stamp+".pem"), oldPriv, 0o600); err != nil {

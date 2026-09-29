@@ -28,6 +28,9 @@ func runSync(root string) error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(filepath.Join(root, ".keys", "jwks-extra"), 0o755); err != nil {
+		return err
+	}
 
 	var enabled []Manifest
 	for _, m := range manifests {
@@ -57,7 +60,53 @@ func runSync(root string) error {
 	if err := writeDocsIndex(root, enabled); err != nil {
 		return err
 	}
+	if err := stageSDK(root, enabled); err != nil {
+		return err
+	}
 	fmt.Printf("sync 完成：%d 个服务（enabled）→ kong.yml + docker-compose.services.yml\n", len(enabled))
+	return nil
+}
+
+// stageSDK 把验签 SDK 放进各服务构建上下文（.dockerignore 排除，不进仓库）。
+func stageSDK(root string, manifests []Manifest) error {
+	for _, m := range manifests {
+		if m.IsThirdParty() || m.Dir == "" {
+			continue
+		}
+		var src, dst string
+		switch m.Lang {
+		case "py":
+			src, dst = filepath.Join(root, "sdk", "py"), filepath.Join(m.Dir, "sdk")
+		case "php":
+			src, dst = filepath.Join(root, "sdk", "php"), filepath.Join(m.Dir, "sdk")
+		case "go":
+			src, dst = filepath.Join(root, "sdk", "go", "pfauth"), filepath.Join(m.Dir, "sdk", "pfauth")
+		default:
+			continue
+		}
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(src, e.Name()))
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dst, e.Name()), raw, 0o644); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
