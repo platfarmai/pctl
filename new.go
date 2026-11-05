@@ -46,6 +46,12 @@ func runNew(root, id, lang string) error {
 		return fmt.Errorf("生成骨架失败: %w", err)
 	}
 
+	// 立刻把验签 SDK 放进构建上下文，避免第一次 docker build 因 replace ./sdk/pfauth 缺失而失败。
+	// 之后 pctl sync 还会再同步一次，保持与源码树一致。
+	if err := stageSDK(root, []Manifest{{Lang: lang, Dir: destDir}}); err != nil {
+		return fmt.Errorf("写入 SDK 失败: %w", err)
+	}
+
 	fmt.Printf("已生成 %s（挂载点 %s）\n", destDir, mount)
 	fmt.Println("下一步：实现业务 → pctl sync → docker compose up -d --build → pctl check")
 	return nil
