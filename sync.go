@@ -46,6 +46,10 @@ func runSync(root string) error {
 	} else {
 		os.Setenv("PF_REDIS_URL", "redis://redis:6379/0")
 	}
+	// 外部 redis（宿主/托管实例）：跳过 gateway 对 compose 内 redis 服务的依赖声明
+	if v := envFromRoot(root, "PF_REDIS_EXTERNAL"); v != "" {
+		os.Setenv("PF_REDIS_EXTERNAL", v)
+	}
 	kong := renderKong(enabled, pubPEM, redisRateLimit())
 	if err := os.WriteFile(filepath.Join(root, "gateway", "kong.yml"), []byte(kong), 0o644); err != nil {
 		return fmt.Errorf("write kong.yml: %w", err)
@@ -561,6 +565,13 @@ func rateLimitByAppYAML(minute int, indent string) string {
 }
 
 func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
+	// 根站点插件（mount.website）：根路由 "/" 改指站点服务；无站点时仍指 auth 平台索引。
+	hasWebsite := false
+	for _, m := range manifests {
+		if m.Mount.Website {
+			hasWebsite = true
+		}
+	}
 	var b strings.Builder
 	b.WriteString("_format_version: \"3.0\"\n\n")
 	b.WriteString(generatedHeader)
@@ -568,7 +579,12 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	b.WriteString("  - name: auth\n    url: http://auth:8080\n    retries: 2\n    routes:\n")
 	b.WriteString("      - name: auth-route\n        paths: [\"/auth\"]\n        strip_path: false\n        plugins:\n")
 	b.WriteString(rateLimitYAML(60, "          "))
-	b.WriteString("      - name: platform-root\n        paths: [\"/\"]\n        strip_path: false\n")
+	if !hasWebsite {
+		b.WriteString("      - name: platform-root\n        paths: [\"/\"]\n        strip_path: false\n")
+	} else {
+		// 平台索引 JSON 挪到 /platform/info（strip 后命中 auth 的 "/"），根路径让给官网站点
+		b.WriteString("      - name: platform-info\n        paths: [\"/platform/info\"]\n        strip_path: true\n")
+	}
 	b.WriteString("      - name: platform-docs\n        paths: [\"/docs\"]\n        strip_path: false\n")
 	// SSO 统一管理壳：console 经网关同源挂载（specs/006）
 	b.WriteString("  - name: console\n    url: http://console:8080\n    retries: 2\n    routes:\n")
@@ -577,6 +593,15 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	b.WriteString("      - name: platform-ui\n        paths: [\"/platform/ui\"]\n        strip_path: false\n")
 	for _, m := range manifests {
 		fmt.Fprintf(&b, "\n  - name: %s\n    url: http://%s:%d\n    retries: 2\n    routes:\n", m.ID, m.ID, m.Runtime.Port)
+		if m.Mount.Website {
+			// 根站点：单一公开路由占据 "/"（Kong 最长前缀匹配，/auth、/api/*、/platform/* 仍优先命中）
+			fmt.Fprintf(&b, "      - name: %s-root\n        paths: [\"/\"]\n        strip_path: false\n", m.ID)
+			if m.Limits.RatePerMinute > 0 {
+				b.WriteString("        plugins:\n")
+				b.WriteString(rateLimitYAML(m.Limits.RatePerMinute, "          "))
+			}
+			continue
+		}
 		for i, p := range publicPrefixes(m) {
 			fmt.Fprintf(&b, "      - name: %s-public-%d\n        paths: [\"%s\"]\n        strip_path: %v\n", m.ID, i, p, m.Mount.StripPath)
 		}

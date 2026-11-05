@@ -1,71 +1,47 @@
 <!doctype html>
-<html lang="zh-CN" data-pf-theme="dark">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+// 本页依赖相对路径请求（fetch('login') 等）：经网关挂载在 /platform/console 时，
+// 缺结尾斜杠会把请求解析到 /platform/login（落到根站点返回 HTML）。统一补斜杠。
+if (!location.pathname.endsWith('/')) {
+  location.replace(location.pathname + '/' + location.search + location.hash);
+}
+</script>
 <title>Platfarm Console</title>
 <link rel="stylesheet" href="/platform/ui/v1/pf-ui.css">
+<link rel="stylesheet" href="/platform/ui/v1/tw.css">
 <script src="/platform/ui/v1/pf-ui.js" defer></script>
 <style>
+  /* 布局用 tw 工具类 + pf-ui 组件类；这里只保留无法用 class 表达的根元素高度 */
   html, body.pf-body { height: 100%; }
-  body.pf-body {
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
-  }
-  #wrap { flex: 1; display: flex; min-height: 0; }
-  #panel {
-    flex: 1;
-    overflow: auto;
-    padding: 20px;
-  }
-  iframe {
-    flex: 1;
-    border: 0;
-    background: var(--pf-surface);
-  }
-  #login {
-    margin: 80px auto;
-    width: fit-content;
-    max-width: 360px;
-  }
-  #login .pf-card { min-width: 280px; }
-  pre.pf-log {
-    background: var(--pf-surface);
-    border: 1px solid var(--pf-border);
-    border-radius: var(--pf-radius);
-    padding: 12px;
-    max-height: 320px;
-    overflow: auto;
-    white-space: pre-wrap;
-    font-family: var(--pf-font-mono);
-    font-size: var(--pf-fs-12);
-    color: var(--pf-text);
-    margin: 0;
-  }
-  #msg {
-    color: var(--pf-danger);
-    min-height: 20px;
-    font-size: var(--pf-fs-13);
-  }
-  .pf-section > h2 {
+  .pf-card > h2 {
     display: flex;
     align-items: center;
     gap: 8px;
+    margin: 0 0 12px;
+    font-size: var(--pf-fs-16);
+    font-weight: 600;
   }
-  pf-topbar .pf-topbar-actions { gap: 12px; }
-  #nav { display: flex; gap: 6px; flex-wrap: wrap; }
 </style>
 </head>
 <body class="pf-body">
-<pf-topbar title="Platfarm 控制台">
-  <nav id="nav" hidden></nav>
-  <span id="who" class="pf-muted"></span>
-  <pf-button id="logout" variant="ghost" size="sm" hidden onclick="logout()">退出</pf-button>
-</pf-topbar>
+<div class="pf-shell">
+<aside class="pf-side">
+  <div class="pf-brand">Platfarm</div>
+  <nav id="nav" class="pf-nav" hidden></nav>
+  <div class="mt-auto flex flex-col gap-2 p-2">
+    <span id="who" class="pf-muted"></span>
+    <pf-theme-toggle></pf-theme-toggle>
+    <pf-button id="logout" variant="ghost" size="sm" hidden onclick="logout()">退出</pf-button>
+  </div>
+</aside>
+<div class="pf-main">
 
-<div id="login">
-  <div class="pf-card">
+<div id="login" class="mx-auto my-20 w-fit max-w-[360px]">
+  <div class="pf-card min-w-[280px]">
     <form class="pf-form" onsubmit="event.preventDefault(); login();">
       <button type="submit" hidden tabindex="-1" aria-hidden="true"></button>
       <div class="pf-field">
@@ -77,24 +53,26 @@
         <input id="p" placeholder="密码" type="password" autocomplete="current-password">
       </div>
       <pf-button variant="primary" onclick="login()">登录（需 admin 角色）</pf-button>
-      <div id="msg"></div>
+      <div id="msg" class="min-h-5 text-[13px] text-danger"></div>
     </form>
   </div>
 </div>
 
-<div id="wrap" hidden>
-  <div id="panel">
-    <section class="pf-section">
+<div id="wrap" class="flex flex-1 min-h-0" hidden>
+  <div id="panel" class="flex flex-1 flex-col gap-4 overflow-auto p-6">
+    <section class="pf-card">
       <h2>服务 <pf-button size="sm" onclick="loadServices()">刷新</pf-button></h2>
       <table class="pf-table"><thead><tr>
         <th>ID</th><th>挂载</th><th>信任</th><th>语言</th><th>状态</th><th>操作</th>
       </tr></thead><tbody id="rows"></tbody></table>
     </section>
-    <section class="pf-section"><h2>日志 <span id="logtitle" class="pf-muted"></span></h2><pre id="logs" class="pf-log">（点击服务行的"日志"查看）</pre></section>
-    <section class="pf-section"><h2>审计</h2><pre id="audit" class="pf-log">-</pre></section>
+    <section class="pf-card"><h2>日志 <span id="logtitle" class="pf-muted"></span></h2><pre id="logs" class="pf-log">（点击服务行的"日志"查看）</pre></section>
+    <section class="pf-card"><h2>审计</h2><pre id="audit" class="pf-log">-</pre></section>
     <p class="pf-muted">SSO：登录后打开各应用后台无需再次登录。创建/卸载类操作仍走宿主机 pctl CLI。</p>
   </div>
-  <iframe id="frame" hidden></iframe>
+  <iframe id="frame" class="flex-1 border-0 bg-surface" hidden></iframe>
+</div>
+</div>
 </div>
 
 <script>

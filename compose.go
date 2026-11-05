@@ -74,7 +74,7 @@ func renderGateway(b *strings.Builder, pluginNets []string) {
       KONG_UNTRUSTED_LUA: sandbox # pre-function 需 require（SSO/scope 校验 specs/006+009，响应加密附录 F）
       KONG_UNTRUSTED_LUA_SANDBOX_REQUIRES: cjson,resty.openssl.kdf,resty.openssl.cipher,resty.random
     ports:
-      - "18000:8000"
+      - "${PF_GATEWAY_PORT:-18000}:8000"
     volumes:
       - ./gateway/kong.yml:/kong/kong.yml:ro
     depends_on:
@@ -245,6 +245,10 @@ func renderEgressProxy(b *strings.Builder, m Manifest) {
 }
 
 func redisDepends() string {
+	// PF_REDIS_EXTERNAL=1：redis 不在本 compose 内（宿主/外部实例），不能声明依赖。
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("PF_REDIS_EXTERNAL"))); v == "1" || v == "true" || v == "yes" {
+		return ""
+	}
 	if redisRateLimit() {
 		return `
       redis:

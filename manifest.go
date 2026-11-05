@@ -29,6 +29,9 @@ type Manifest struct {
 		StripPath    bool     `yaml:"strip_path"`
 		PublicRoutes []string `yaml:"public_routes"`
 		AdminRoutes  []string `yaml:"admin_routes"`
+		// Website 根站点插件（企业官网等）：mount.path 必须为 "/"，全站公开、免认证，
+		// 网关根路由改指该服务（替代 auth 的平台索引）。每实例至多一个。
+		Website bool `yaml:"website"`
 	} `yaml:"mount"`
 	Auth struct {
 		Required            bool     `yaml:"required"`
@@ -208,6 +211,7 @@ func validateManifests(manifests []Manifest) error {
 	var problems []string
 	seenID := map[string]bool{}
 	seenPath := map[string]string{}
+	websiteOwner := ""
 
 	for _, m := range manifests {
 		dirName := filepath.Base(m.Dir)
@@ -223,6 +227,24 @@ func validateManifests(manifests []Manifest) error {
 
 		p := m.Mount.Path
 		switch {
+		case m.Mount.Website:
+			// 根站点插件（企业官网）：独占 "/"，全站公开，网关不挂 JWT。
+			if p != "/" {
+				problems = append(problems, fmt.Sprintf("%s: mount.website=true 时 mount.path 必须为 \"/\"（当前 %q）", m.ID, p))
+			}
+			if websiteOwner != "" {
+				problems = append(problems, fmt.Sprintf("%s: 根站点插件重复（%s 已占用 /）", m.ID, websiteOwner))
+			}
+			websiteOwner = m.ID
+			if m.Auth.Required {
+				problems = append(problems, fmt.Sprintf("%s: 根站点插件必须 auth.required=false（全站公开）", m.ID))
+			}
+			if m.IsThirdParty() {
+				problems = append(problems, fmt.Sprintf("%s: 根站点插件必须为 first-party（占据根路由）", m.ID))
+			}
+			if len(m.Mount.PublicRoutes)+len(m.Mount.AdminRoutes)+len(m.OpenAPI) > 0 {
+				problems = append(problems, fmt.Sprintf("%s: 根站点插件不支持 public_routes/admin_routes/open_api", m.ID))
+			}
 		case !strings.HasPrefix(p, "/api/"):
 			problems = append(problems, fmt.Sprintf("%s: mount.path %q 必须位于 /api/ 命名空间", m.ID, p))
 		default:
