@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,8 +36,9 @@ func renderServicesCompose(manifests []Manifest, servicesOnly bool) string {
 		}
 	}
 	hasEgress := false
+	catalog := scopeCatalogJSON(manifests)
 	for _, m := range manifests {
-		renderService(&b, m)
+		renderService(&b, m, catalog)
 		if m.IsThirdParty() && len(m.Permissions.Egress) > 0 {
 			renderEgressProxy(&b, m)
 			hasEgress = true
@@ -106,7 +108,49 @@ func renderPluginPG(b *strings.Builder, pluginNets []string) {
 ` + netList(append([]string{"core-net"}, pluginNets...)))
 }
 
-func renderService(b *strings.Builder, m Manifest) {
+// scopeCatalogEntry 开放平台可授权给 app 的一个 scope。
+type scopeCatalogEntry struct {
+	Service string   `json:"service"`
+	Name    string   `json:"name"`
+	Desc    string   `json:"desc"`
+	Routes  []string `json:"routes"`
+}
+
+// scopeCatalog 汇总所有启用服务里被 open_api 路由引用的 scope（清单顺序 + 声明顺序）。
+// 只在 exposes.scopes 声明、没有开放路由的 scope 是给服务 token 用的，授权给 app 没有意义，不收录。
+func scopeCatalog(manifests []Manifest) []scopeCatalogEntry {
+	out := []scopeCatalogEntry{}
+	for _, m := range manifests {
+		routes := map[string][]string{}
+		for _, o := range m.OpenAPI {
+			routes[o.Scope] = append(routes[o.Scope], o.Method()+" "+o.Path())
+		}
+		for _, s := range m.Exposes.Scopes {
+			if len(routes[s.Name]) == 0 {
+				continue
+			}
+			out = append(out, scopeCatalogEntry{Service: m.ID, Name: s.Name, Desc: s.Desc, Routes: routes[s.Name]})
+		}
+	}
+	return out
+}
+
+func scopeCatalogJSON(manifests []Manifest) string {
+	raw, err := json.Marshal(scopeCatalog(manifests))
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
+}
+
+// composeLiteral 把任意字符串写成 compose 里的 YAML 单引号标量：
+// `'` 写成 `''`；`$` 写成 `$$`，否则 compose 会把它当变量插值。
+func composeLiteral(s string) string {
+	s = strings.ReplaceAll(s, "$", "$$")
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func renderService(b *strings.Builder, m Manifest, catalogJSON string) {
 	fmt.Fprintf(b, "  %s:\n", m.ID)
 	if m.IsThirdParty() {
 		image := m.Source.Image
@@ -147,6 +191,10 @@ func renderService(b *strings.Builder, m Manifest) {
 			}
 			if v == "LOKI_URL" { // specs/013：默认空 → 用量视图显示"未启用"
 				fmt.Fprintf(b, "      %s: ${LOKI_URL:-}\n", v)
+				continue
+			}
+			if v == "PF_SCOPE_CATALOG" { // 开放 scope 目录由清单生成，不从 .env 取（svc-openapi 用它渲染授权勾选项）
+				fmt.Fprintf(b, "      %s: %s\n", v, composeLiteral(catalogJSON))
 				continue
 			}
 			// 服务专属变量优先，回落到同名全局变量。
