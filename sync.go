@@ -588,6 +588,8 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	b.WriteString("  - name: auth\n    url: http://auth:8080\n    retries: 2\n    routes:\n")
 	b.WriteString("      - name: auth-route\n        paths: [\"/auth\"]\n        strip_path: false\n        plugins:\n")
 	b.WriteString(rateLimitYAML(60, "          "))
+	b.WriteString("      - name: oauth-token\n        paths: [\"/oauth/token\"]\n        methods: [\"POST\"]\n        strip_path: false\n        plugins:\n")
+	b.WriteString(rateLimitYAML(60, "          "))
 	if !hasWebsite {
 		b.WriteString("      - name: platform-root\n        paths: [\"/\"]\n        strip_path: false\n")
 	} else {

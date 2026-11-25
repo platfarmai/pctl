@@ -93,6 +93,9 @@ func TestRenderKong_whenWebsite_thenRootRouteMovesToSiteAndIndexMovesToInfo(t *t
 	if !strings.Contains(out, `name: platform-info`) || !strings.Contains(out, `paths: ["/platform/info"]`) {
 		t.Fatalf("platform index must move to /platform/info:\n%s", out)
 	}
+	if !strings.Contains(out, `name: oauth-token`) || !strings.Contains(out, `paths: ["/oauth/token"]`) {
+		t.Fatalf("/oauth/token must remain routed to auth when a website plugin owns /:\n%s", out)
+	}
 	if !strings.Contains(out, "name: svc-site-root") || !strings.Contains(out, `paths: ["/"]`) {
 		t.Fatalf("website plugin must own the root route:\n%s", out)
 	}
