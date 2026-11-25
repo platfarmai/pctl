@@ -564,6 +564,15 @@ func rateLimitByAppYAML(minute int, indent string) string {
 	return fmt.Sprintf("%s- name: rate-limiting\n%s  config: { minute: %d, policy: local, limit_by: header, header_name: X-PF-App-Key }\n", indent, indent, minute)
 }
 
+// yamlPath 把路由路径写成 YAML 标量。正则路径（`~` 开头）可能含反斜杠，
+// 双引号里 `\.` 是非法转义，所以用单引号；普通路径保持双引号，生成结果不变。
+func yamlPath(p string) string {
+	if strings.HasPrefix(p, "~") {
+		return "'" + strings.ReplaceAll(p, "'", "''") + "'"
+	}
+	return "\"" + p + "\""
+}
+
 func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 	// 根站点插件（mount.website）：根路由 "/" 改指站点服务；无站点时仍指 auth 平台索引。
 	hasWebsite := false
@@ -607,8 +616,8 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 		}
 		// 开放平台路由（specs/009）：更具体的路径 + 方法，优先于 -protected 命中
 		for i, o := range m.OpenAPI {
-			fmt.Fprintf(&b, "      - name: %s-open-%d\n        paths: [\"%s\"]\n        methods: [\"%s\"]\n        strip_path: %v\n",
-				m.ID, i, o.Path(), o.Method(), m.Mount.StripPath)
+			fmt.Fprintf(&b, "      - name: %s-open-%d\n        paths: [%s]\n        methods: [\"%s\"]\n        strip_path: %v\n",
+				m.ID, i, yamlPath(o.KongPath()), o.Method(), m.Mount.StripPath)
 			b.WriteString("        plugins:\n")
 			b.WriteString("          - name: jwt\n            config: { key_claim_name: iss, claims_to_verify: [\"exp\"] }\n")
 			b.WriteString(openScopeGateYAML(o.Scope, "          "))

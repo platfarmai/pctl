@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -117,6 +118,32 @@ func (o OpenRoute) Method() string {
 func (o OpenRoute) Path() string {
 	f := strings.Fields(o.Route)
 	return f[len(f)-1]
+}
+
+// KongPath 返回写进 Kong 路由 paths 的值。
+// 不含通配符的路径原样返回（Kong 按前缀匹配）；含 `*` 段的路径转成带锚点的正则路径
+// （Kong 3.x 以 `~` 开头表示正则），每个 `*` 只匹配一段：
+//
+//	/api/pay/v1/orders/*        → ~/api/pay/v1/orders/[^/]+$
+//	/api/pay/v1/orders/*/close  → ~/api/pay/v1/orders/[^/]+/close$
+//
+// Kong 不认识 `*`：原样写进 paths 只会被当成字面前缀，永远匹配不到真实请求，
+// 请求会落到 -protected 路由，scope 校验与按 app 限流都不生效。
+// 结尾加 `$` 让同一前缀下的多条通配路由互不重叠（正则路由之间没有“最长匹配”）。
+func (o OpenRoute) KongPath() string {
+	p := o.Path()
+	if !strings.Contains(p, "*") {
+		return p
+	}
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if s == "*" {
+			segs[i] = "[^/]+"
+		} else {
+			segs[i] = regexp.QuoteMeta(s)
+		}
+	}
+	return "~" + strings.Join(segs, "/") + "$"
 }
 
 func (m Manifest) IsThirdParty() bool { return m.Trust == "third-party" }

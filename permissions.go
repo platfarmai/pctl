@@ -134,6 +134,17 @@ func validateOpenAPI(m Manifest) []string {
 			problems = append(problems,
 				fmt.Sprintf("%s: open_api.route %q 的路径须在 mount.path %q 下", m.ID, o.Route, m.Mount.Path))
 		}
+		// 通配符只能独占一段：/orders/*、/orders/*/close 合法；/orders/a*、/orders/** 不合法。
+		for _, seg := range strings.Split(o.Path(), "/") {
+			if strings.Contains(seg, "*") && seg != "*" {
+				problems = append(problems,
+					fmt.Sprintf("%s: open_api.route %q 的通配符 * 必须独占一段（如 /orders/*/close）", m.ID, o.Route))
+				break
+			}
+		}
+		if strings.ContainsAny(o.Path(), "\"'") {
+			problems = append(problems, fmt.Sprintf("%s: open_api.route %q 的路径不得包含引号", m.ID, o.Route))
+		}
 		if o.Scope == "" {
 			problems = append(problems, fmt.Sprintf("%s: open_api.route %q 缺 scope", m.ID, o.Route))
 		} else if !declared[o.Scope] {
