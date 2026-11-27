@@ -611,6 +611,15 @@ func renderKong(manifests []Manifest, pubPEM string, _ bool) string {
 				b.WriteString("        plugins:\n")
 				b.WriteString(rateLimitYAML(m.Limits.RatePerMinute, "          "))
 			}
+			// mount.browser_pages：同一路径上再挂一条带 Accept 头条件的路由。Kong 优先匹配条件更多的路由，
+			// 所以浏览器（Accept 含 text/html）到站点拿页面，其余请求仍落到 auth 的 platform-docs / platform-info 拿 JSON。
+			for i, page := range m.Mount.BrowserPages {
+				fmt.Fprintf(&b, "      - name: %s-page-%d\n        paths: [\"%s\"]\n        headers: { accept: ['~*text/html'] }\n        strip_path: false\n", m.ID, i, page)
+				if m.Limits.RatePerMinute > 0 {
+					b.WriteString("        plugins:\n")
+					b.WriteString(rateLimitYAML(m.Limits.RatePerMinute, "          "))
+				}
+			}
 			continue
 		}
 		for i, p := range publicPrefixes(m) {

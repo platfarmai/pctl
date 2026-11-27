@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -33,6 +34,10 @@ type Manifest struct {
 		// Website 根站点插件（企业官网等）：mount.path 必须为 "/"，全站公开、免认证，
 		// 网关根路由改指该服务（替代 auth 的平台索引）。每实例至多一个。
 		Website bool `yaml:"website"`
+		// BrowserPages 仅根站点可用：浏览器（Accept 含 text/html）访问这些平台保留路径时
+		// 交给站点渲染成页面；程序调用（Accept 不含 text/html）仍由 auth 返回 JSON。
+		// 可选值见 websiteBrowserPages。不声明则这些路径只有 JSON。
+		BrowserPages []string `yaml:"browser_pages"`
 	} `yaml:"mount"`
 	Auth struct {
 		Required            bool     `yaml:"required"`
@@ -171,6 +176,10 @@ func (m Manifest) NetworkName() string {
 
 var reservedPrefixes = []string{"/auth", "/platform", "/internal", "/docs"}
 
+// websiteBrowserPages 根站点可以接管浏览器展示的平台路径（mount.browser_pages）。
+// 这些路径在 auth 上只有 JSON，浏览器直接打开是一段原始 JSON。
+var websiteBrowserPages = []string{"/docs", "/platform/info"}
+
 // servicesDirs 返回要扫描清单的目录列表。
 // 镜像部署（compose.release.yml）的运行目录没有 services/，插件源码常放在别处（如 _src/services），
 // 此时 sync 会扫不到任何清单，生成出只含 auth 的 kong.yml。
@@ -272,6 +281,16 @@ func validateManifests(manifests []Manifest) error {
 			if len(m.Mount.PublicRoutes)+len(m.Mount.AdminRoutes)+len(m.OpenAPI) > 0 {
 				problems = append(problems, fmt.Sprintf("%s: 根站点插件不支持 public_routes/admin_routes/open_api", m.ID))
 			}
+			seenPage := map[string]bool{}
+			for _, page := range m.Mount.BrowserPages {
+				switch {
+				case !slices.Contains(websiteBrowserPages, page):
+					problems = append(problems, fmt.Sprintf("%s: mount.browser_pages 不支持 %q（可选：%s）", m.ID, page, strings.Join(websiteBrowserPages, "、")))
+				case seenPage[page]:
+					problems = append(problems, fmt.Sprintf("%s: mount.browser_pages %q 重复", m.ID, page))
+				}
+				seenPage[page] = true
+			}
 		case !strings.HasPrefix(p, "/api/"):
 			problems = append(problems, fmt.Sprintf("%s: mount.path %q 必须位于 /api/ 命名空间", m.ID, p))
 		default:
@@ -286,6 +305,10 @@ func validateManifests(manifests []Manifest) error {
 				}
 			}
 			seenPath[m.ID] = p
+		}
+
+		if !m.Mount.Website && len(m.Mount.BrowserPages) > 0 {
+			problems = append(problems, fmt.Sprintf("%s: mount.browser_pages 只能用于根站点插件（mount.website=true）", m.ID))
 		}
 
 		if m.Runtime.Port <= 0 {

@@ -109,6 +109,58 @@ func TestRenderKong_whenWebsite_thenRootRouteMovesToSiteAndIndexMovesToInfo(t *t
 	}
 }
 
+func TestValidateManifests_whenBrowserPagesUnknown_thenError(t *testing.T) {
+	m := websiteManifest("svc-site")
+	m.Mount.BrowserPages = []string{"/docs", "/auth/login"}
+	if err := validateManifests([]Manifest{m}); err == nil || !strings.Contains(err.Error(), `browser_pages 不支持 "/auth/login"`) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestValidateManifests_whenBrowserPagesDuplicated_thenError(t *testing.T) {
+	m := websiteManifest("svc-site")
+	m.Mount.BrowserPages = []string{"/docs", "/docs"}
+	if err := validateManifests([]Manifest{m}); err == nil || !strings.Contains(err.Error(), "重复") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestValidateManifests_whenBrowserPagesOnApiService_thenError(t *testing.T) {
+	m := apiManifest("svc-demo")
+	m.Mount.BrowserPages = []string{"/docs"}
+	if err := validateManifests([]Manifest{m}); err == nil || !strings.Contains(err.Error(), "只能用于根站点插件") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestRenderKong_whenWebsiteWithoutBrowserPages_thenNoHeaderRoutes(t *testing.T) {
+	out := renderKong([]Manifest{websiteManifest("svc-site")}, "", false)
+	if strings.Contains(out, "svc-site-page-") || strings.Contains(out, "headers:") {
+		t.Fatalf("browser page routes must be opt-in:\n%s", out)
+	}
+}
+
+func TestRenderKong_whenBrowserPages_thenHtmlRequestsGoToSiteAndJsonStaysOnAuth(t *testing.T) {
+	site := websiteManifest("svc-site")
+	site.Mount.BrowserPages = []string{"/docs", "/platform/info"}
+	if err := validateManifests([]Manifest{site}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := renderKong([]Manifest{site}, "", false)
+
+	for _, want := range []string{
+		"      - name: svc-site-page-0\n        paths: [\"/docs\"]\n        headers: { accept: ['~*text/html'] }\n        strip_path: false\n",
+		"      - name: svc-site-page-1\n        paths: [\"/platform/info\"]\n        headers: { accept: ['~*text/html'] }\n        strip_path: false\n",
+		// JSON 路由原样保留在 auth 上，程序调用不受影响。
+		"      - name: platform-info\n        paths: [\"/platform/info\"]\n        strip_path: true\n",
+		"      - name: platform-docs\n        paths: [\"/docs\"]\n        strip_path: false\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing route block %q in:\n%s", want, out)
+		}
+	}
+}
+
 func TestRedisDepends_whenExternal_thenNoDependsBlock(t *testing.T) {
 	t.Setenv("PF_REDIS_URL", "redis://redis:6379/0")
 	t.Setenv("PF_REDIS_EXTERNAL", "1")
